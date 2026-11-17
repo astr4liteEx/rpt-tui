@@ -8,10 +8,11 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 
-use super::{App, Focus, theme::Theme};
+use super::{App, Focus, Mark, term::TermView, theme::Theme};
 use crate::rpt::{Finding, Problem};
 
-pub fn draw(f: &mut Frame, app: &App) {
+/// Draws the home screen; returns the inside of the right side, where a run's pane goes.
+pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
     let t = app.theme;
     f.render_widget(Block::new().style(Style::new().bg(t.bg).fg(t.text)), f.area());
 
@@ -21,8 +22,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     let [left, right] = Layout::horizontal([Constraint::Percentage(42), Constraint::Min(0)]).areas(body);
     let problems_height = (app.view.problems.len() as u16 + 2).clamp(3, 7);
+    let runs_height = (app.runs.entries.len() as u16 + 2).clamp(5, 8);
     let [lf, lp, lr] =
-        Layout::vertical([Constraint::Min(5), Constraint::Length(problems_height), Constraint::Length(5)]).areas(left);
+        Layout::vertical([Constraint::Min(5), Constraint::Length(problems_height), Constraint::Length(runs_height)])
+            .areas(left);
     draw_findings(f, lf, app);
     draw_problems(f, lp, app);
     draw_runs(f, lr, app);
@@ -30,18 +33,72 @@ pub fn draw(f: &mut Frame, app: &App) {
     match app.focus {
         Focus::Findings => draw_finding_preview(f, right, app),
         Focus::Problems => draw_problem(f, right, app),
-        Focus::Runs => draw_placeholder(f, right, &t, "Run", "No run selected."),
+        Focus::Runs => draw_pane(f, right, app),
     }
 
-    let hints = match app.focus {
-        Focus::Findings | Focus::Problems => " j/k move · g/G top/bottom · tab/1-3 focus · q quit",
-        Focus::Runs => " tab/1-3 focus · q quit",
+    let hints = if app.runs.key_target().is_some() {
+        " keys go to the run · ctrl-g leave · ctrl-t takeover"
+    } else {
+        match app.focus {
+            Focus::Findings | Focus::Problems => " j/k move · g/G top/bottom · tab/1-3 focus · q quit",
+            Focus::Runs => " enter keys · f takeover · x kill · j/k move · tab/1-3 focus · q quit",
+        }
     };
     f.render_widget(Line::from(Span::styled(hints, Style::new().fg(t.muted))), footer);
 
     if let Some(msg) = &app.toast {
         draw_toast(f, &t, msg);
     }
+    Some(Block::bordered().inner(right))
+}
+
+/// The selected run's screen on the right side, bordered in `border_run` while it has the keys.
+fn draw_pane(f: &mut Frame, area: Rect, app: &App) {
+    let t = app.theme;
+    let Some(entry) = app.runs.selected() else {
+        return draw_placeholder(f, area, &t, "Run", "No run selected.");
+    };
+    let has_keys = app.runs.key_target() == Some(app.runs.sel);
+    let colour = if has_keys { t.border_run } else { t.border };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(colour))
+        .title(Line::from(Span::styled(format!(" {} ", entry.label), Style::new().fg(t.text))))
+        .title(
+            Line::from(Span::styled(format!(" {} ", Mark::of(&entry.run).text()), Style::new().fg(t.muted)))
+                .right_aligned(),
+        );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    draw_screen(f, inner, app, &entry.run, has_keys);
+}
+
+/// A run's screen in `area`, with the cursor shown when the run has the keys.
+fn draw_screen(f: &mut Frame, area: Rect, app: &App, run: &crate::run::Run, has_keys: bool) {
+    let t = app.theme;
+    let cursor = run.with_screen(|screen| {
+        f.render_widget(TermView { screen, fg: t.text, bg: t.bg }, area);
+        let (row, col) = screen.cursor_position();
+        (!screen.hide_cursor()).then_some((area.x + col, area.y + row))
+    });
+    if has_keys && let Some((x, y)) = cursor.filter(|&(x, y)| x < area.right() && y < area.bottom()) {
+        f.set_cursor_position((x, y));
+    }
+}
+
+/// Emulated takeover: the run's screen full-size, with one status line at the bottom.
+pub fn draw_takeover(f: &mut Frame, app: &App, i: usize) {
+    let t = app.theme;
+    let Some(entry) = app.runs.entries.get(i) else { return };
+    let [screen, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
+    f.render_widget(Block::new().style(Style::new().bg(t.bg).fg(t.text)), f.area());
+    draw_screen(f, screen, app, &entry.run, true);
+    let line = Line::from(vec![
+        Span::styled(format!(" {} ", entry.label), Style::new().fg(t.bg).bg(t.border_run).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" {} ", Mark::of(&entry.run).text()), Style::new().fg(t.muted)),
+        Span::styled(" ctrl-t pane · ctrl-g leave", Style::new().fg(t.muted)),
+    ]);
+    f.render_widget(line.style(Style::new().bg(t.surface)), status);
 }
 
 fn panel<'a>(t: &Theme, title: &'a str, focused: bool) -> Block<'a> {
@@ -165,7 +222,26 @@ fn location(p: &Problem) -> String {
 fn draw_runs(f: &mut Frame, area: Rect, app: &App) {
     let t = app.theme;
     let block = panel(&t, "3 Runs", app.focus == Focus::Runs);
-    f.render_widget(Paragraph::new(Span::styled("No runs yet.", Style::new().fg(t.muted))).block(block), area);
+    if app.runs.entries.is_empty() {
+        f.render_widget(Paragraph::new(Span::styled("No runs yet.", Style::new().fg(t.muted))).block(block), area);
+        return;
+    }
+    let items: Vec<ListItem> = app
+        .runs
+        .entries
+        .iter()
+        .map(|e| {
+            let mark = Mark::of(&e.run);
+            let colour = mark.colour(&t);
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{:<12}", mark.text()), Style::new().fg(colour)),
+                Span::styled(e.label.clone(), Style::new().fg(t.text)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items).block(block).highlight_style(Style::new().bg(t.surface)).highlight_symbol("▌");
+    let mut state = ListState::default().with_selected(Some(app.runs.sel));
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 /// Body sections in reading order: the usual three first, then any others by name.

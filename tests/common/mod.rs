@@ -61,3 +61,16 @@ pub fn stand_in_rpt(dir: &Path, name: &str, script: &str) -> PathBuf {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }
+
+/// One row of a ratatui buffer as text, the way a terminal shows it: the cell after a
+/// wide character is hidden behind it, so it is skipped.
+pub fn row_text(buf: &ratatui::buffer::Buffer, y: u16) -> String {
+    let mut out = String::new();
+    let mut x = 0;
+    while x < buf.area.width {
+        let symbol = buf[(x, y)].symbol();
+        out.push_str(symbol);
+        x += unicode_width::UnicodeWidthStr::width(symbol).max(1) as u16;
+    }
+    out.trim_end().to_string()
+}

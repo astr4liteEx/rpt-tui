@@ -1,0 +1,29 @@
+---
+source: tests/runs_ui.rs
+assertion_line: 151
+expression: s
+---
+a:20 56
+
+b:23 100
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ sizes  ● live  ctrl-t pane · ctrl-g leave

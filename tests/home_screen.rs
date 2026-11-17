@@ -21,9 +21,7 @@ fn screen(app: &mut App, report: &std::path::Path) -> String {
     let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
     term.draw(|f| app.draw(f)).unwrap();
     let buf = term.backend().buffer();
-    let text: Vec<String> = (0..buf.area.height)
-        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>().trim_end().to_string())
-        .collect();
+    let text: Vec<String> = (0..buf.area.height).map(|y| common::row_text(buf, y)).collect();
     let report = report.display().to_string();
     text.join("\n").replace(&report, "<report>")
 }
@@ -132,7 +130,7 @@ fn the_footer_hints_follow_focus() {
 
     assert!(screen(&mut app, report.path()).lines().last().unwrap().contains("j/k move"));
     press(&mut app, '3');
-    assert!(!screen(&mut app, report.path()).lines().last().unwrap().contains("j/k move"));
+    assert!(screen(&mut app, report.path()).lines().last().unwrap().contains("f takeover"));
 }
 
 #[test]

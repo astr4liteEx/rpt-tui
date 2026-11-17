@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Test fixture: a fake interactive rpt plugin, for rpt-tui's run host tests.
+
+Draws its own inline menus on the terminal it was given (no curses, no alternate
+screen), the way prompt_toolkit/questionary plugins do:
+
+  1. asks the terminal for the cursor position (CPR), like prompt_toolkit does
+  2. a checklist (arrows or j/k, space toggles, enter confirms)
+  3. a file picker over the current folder (type to filter, enter picks)
+  4. a burst of streaming output: progress bar, true colour, wide chars, SGR 9
+
+`--probe` only sends DSR / CPR / DA1 / DA2 / OSC 11 and prints what came back.
+"""
+import os
+import select
+import sys
+import termios
+import time
+import tty
+
+OUT = sys.stdout
+
+
+def w(s):
+    OUT.write(s)
+    OUT.flush()
+
+
+def read_reply(timeout, end):
+    """Read bytes until one of `end` or timeout; returns (bytes, seconds)."""
+    t0 = time.monotonic()
+    buf = b""
+    fd = sys.stdin.fileno()
+    while time.monotonic() - t0 < timeout:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            buf += os.read(fd, 64)
+            if any(buf.endswith(e) for e in end):
+                break
+    return buf, time.monotonic() - t0
+
+
+def key():
+    fd = sys.stdin.fileno()
+    b = os.read(fd, 1)
+    if b == b"\x1b":
+        r, _, _ = select.select([fd], [], [], 0.03)
+        if r:
+            b += os.read(fd, 8)
+    m = {
+        b"\x1b[A": "up", b"\x1bOA": "up", b"\x1b[B": "down", b"\x1bOB": "down",
+        b"k": "up", b"j": "down", b" ": "space", b"\r": "enter", b"\n": "enter",
+        b"\x7f": "bs", b"\x08": "bs", b"\x03": "ctrl-c", b"\x1b": "esc",
+    }
+    return m.get(b, b.decode(errors="replace"))
+
+
+def probe():
+    for name, q, end in [
+        ("DSR 5n", "\x1b[5n", [b"n"]),
+        ("CPR 6n", "\x1b[6n", [b"R"]),
+        ("DA1", "\x1b[c", [b"c"]),
+        ("DA2", "\x1b[>c", [b"c"]),
+        ("OSC 11", "\x1b]11;?\x1b\\", [b"\x1b\\", b"\x07"]),
+    ]:
+        w(q)
+        rep, dt = read_reply(1.0, end)
+        shown = repr(rep) if rep else "NO REPLY"
+        w(f"{name:<7} → {shown}  ({dt*1000:.0f} ms)\r\n")
+
+
+def menu(title, items, multi, filterable=False):
+    sel = [False] * len(items)
+    cur, query, drawn, page = 0, "", 0, 8
+    while True:
+        shown = [i for i, x in enumerate(items) if query.lower() in x.lower()]
+        cur = min(cur, max(len(shown) - 1, 0))
+        top = max(0, cur - page + 1)
+        lines = [f"\x1b[1;32m?\x1b[0m \x1b[1m{title}\x1b[0m" + (f"  \x1b[36m/{query}\x1b[0m" if filterable else "")]
+        for pos, i in enumerate(shown[top:top + page], start=top):
+            arrow = "\x1b[35m❯\x1b[0m " if pos == cur else "  "
+            box = ("\x1b[32m◉\x1b[0m " if sel[i] else "\x1b[90m◯\x1b[0m ") if multi else ""
+            lines.append(f"{arrow}{box}{items[i]}")
+        if not shown:
+            lines.append("  \x1b[90m(no match)\x1b[0m")
+        lines.append(f"\x1b[90m  {len(shown)} items · ↑↓ move{' · space toggle' if multi else ''} · enter{' · type to filter' if filterable else ''}\x1b[0m")
+        if drawn:
+            w(f"\x1b[{drawn}A\r")
+        w("\x1b[J" + "\r\n".join(lines) + "\r\n")
+        drawn = len(lines)
+        k = key()
+        if k == "up":
+            cur = max(cur - 1, 0)
+        elif k == "down":
+            cur = min(cur + 1, len(shown) - 1)
+        elif k == "space" and multi and shown:
+            sel[shown[cur]] ^= True
+        elif k == "enter":
+            return [items[i] for i, s in enumerate(sel) if s] if multi else (items[shown[cur]] if shown else None)
+        elif k in ("ctrl-c", "esc"):
+            raise KeyboardInterrupt
+        elif filterable and k == "bs":
+            query = query[:-1]
+        elif filterable and len(k) == 1 and k.isprintable():
+            query += k
+            cur = 0
+
+
+def main():
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setraw(fd)
+    try:
+        if "--probe" in sys.argv:
+            probe()
+            return 0
+        rows, cols = os.get_terminal_size()
+        w(f"\x1b[1mrpt-checklist\x1b[0m 0.0.1 (fake) · pty {cols}x{rows} · RPT_REPORT_DIR={os.environ.get('RPT_REPORT_DIR', '-')}\r\n")
+        w("\x1b[6n")
+        rep, dt = read_reply(2.0, [b"R"])
+        if rep:
+            w(f"\x1b[90mCPR answered in {dt*1000:.0f} ms: {rep!r}\x1b[0m\r\n\r\n")
+        else:
+            w("\x1b[31mCPR not answered after 2 s (prompt_toolkit would stall here)\x1b[0m\r\n\r\n")
+
+        checks = menu("Web-app checklist", [
+            "Authentication: lockout after failed logins",
+            "Authentication: password reset token reuse",
+            "Session: cookie flags (Secure, HttpOnly, SameSite)",
+            "Session: fixation after login",
+            "Input: reflected XSS on all GET params",
+            "Input: SQL injection on auth endpoints",
+            "Upload: content-type and extension checks",
+            "Headers: CSP, HSTS, X-Frame-Options",
+            "TLS: protocol and cipher review",
+            "CJK name check: 報告書_最終版.pdf 🔒",
+        ], multi=True)
+        w(f"\x1b[32m✔\x1b[0m {len(checks)} items checked\r\n\r\n")
+
+        files = []
+        for root, dirs, fs in os.walk("."):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            files += [os.path.join(root, f)[2:] for f in fs]
+        files = sorted(files)[:300] or ["(no files)"]
+        picked = menu("Pick the scan file to import", files, multi=False, filterable=True)
+        w(f"\x1b[32m✔\x1b[0m input: {picked}\r\n\r\n")
+
+        n = 60
+        for i in range(n + 1):
+            bar = "█" * (i * 30 // n) + "░" * (30 - i * 30 // n)
+            w(f"\r\x1b[36mparsing\x1b[0m {bar} {i*100//n:3d}%")
+            time.sleep(0.02)
+        w("\r\n")
+        for i in range(120):
+            r, g, b = (255 - i * 2) % 256, (i * 4) % 256, 200
+            w(f"\x1b[38;2;{r};{g};{b}m■\x1b[0m record {i:03d}  target 10.0.{i//50}.{i%50}:443/tcp  "
+              f"{'\x1b[9mstruck (SGR 9)\x1b[0m' if i % 40 == 0 else ''}{'  ワイド文字 ✓' if i % 25 == 0 else ''}\r\n")
+            time.sleep(0.01)
+        w(f"\x1b[1;32mdone\x1b[0m: 120 records, {len(checks)} checklist items, input {picked}\r\n")
+        return 0
+    except KeyboardInterrupt:
+        w("\r\n\x1b[33minterrupted\x1b[0m\r\n")
+        return 130
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

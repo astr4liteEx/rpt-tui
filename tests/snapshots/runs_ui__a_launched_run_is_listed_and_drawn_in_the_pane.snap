@@ -1,0 +1,29 @@
+---
+source: tests/runs_ui.rs
+assertion_line: 76
+expression: s
+---
+ rpt-tui   <report>   3 findings  1 error  0 warnings
+╭ 1 Findings ────────────────────────────╮╭ greeter ─────────────────────────────────────── ● live ╮
+│ ▌F-003 ● high   SQL injection in login ││hello from a run 日本語                                 │
+│  F-001 ● medium Reflected XSS in searc ││                                                        │
+│  F-002 ● info   Weak TLS configuration ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+╰ 1 high  1 medium  1 info ──────────────╯│                                                        │
+╭ 2 Problems ────────────────────────────╮│                                                        │
+│ ▌✘ error S-99…  findings/tls-weak.md:5 ││                                                        │
+╰────────────────────────────────────────╯│                                                        │
+╭ 3 Runs ────────────────────────────────╮│                                                        │
+│ ▌● live      greeter                   ││                                                        │
+│                                        ││                                                        │
+│                                        ││                                                        │
+╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
+ keys go to the run · ctrl-g leave · ctrl-t takeover

@@ -1,13 +1,29 @@
 //! The terminal UI: app state, keys and the main loop. Drawing is in `home`.
 
 mod home;
+mod runs;
+mod term;
 pub mod theme;
+
+use runs::Runs;
+pub use runs::{Display, Mark, QUIET_AFTER, TakeoverStyle};
 
 use std::path::{Path, PathBuf};
 
+use std::io::Write;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
+
 use ratatui::{
-    Frame,
-    crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    DefaultTerminal, Frame,
+    crossterm::{
+        self,
+        event::{
+            self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode,
+            KeyEvent, KeyEventKind, KeyModifiers,
+        },
+        execute,
+    },
 };
 
 use crate::rpt::{self, Client, Finding, Problem, Version};
@@ -100,13 +116,23 @@ pub struct App {
     problems_sel: usize,
     toast: Option<String>,
     theme: Theme,
+    runs: Runs,
     quit: bool,
 }
 
 impl App {
     pub fn new(view: ReportView) -> App {
         let toast = (!view.errors.is_empty()).then(|| view.errors.join("; "));
-        App { view, focus: Focus::Findings, findings_sel: 0, problems_sel: 0, toast, theme: Theme::CHARM, quit: false }
+        App {
+            view,
+            focus: Focus::Findings,
+            findings_sel: 0,
+            problems_sel: 0,
+            toast,
+            theme: Theme::CHARM,
+            runs: Runs::default(),
+            quit: false,
+        }
     }
 
     pub fn should_quit(&self) -> bool {
@@ -125,6 +151,12 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         // Any key dismisses the toast; real toast timing comes with notifications.
         self.toast = None;
+        if self.run_key(key) {
+            return;
+        }
+        if self.focus == Focus::Runs && self.runs_panel_key(key) {
+            return;
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('c') if ctrl => self.quit = true,
@@ -167,26 +199,46 @@ impl App {
     }
 
     pub fn draw(&mut self, f: &mut Frame) {
-        home::draw(f, self);
+        let area = f.area();
+        self.runs.full = crate::run::Size { rows: area.height, cols: area.width };
+        if let Some(i) = self.runs.takeover {
+            home::draw_takeover(f, self, i);
+        } else if let Some(pane) = home::draw(f, self) {
+            self.runs.pane = pane;
+        }
     }
 }
 
+/// A run to start as soon as the TUI is up (`--dev-run`), until the palette can launch runs.
+pub struct DevRun {
+    pub command: String,
+    pub display: Display,
+}
+
+/// Modes a raw-takeover child may have left on the real terminal: mouse, bracketed paste,
+/// application cursor and keypad, cursor shape and visibility, SGR, focus events, kitty
+/// keyboard and synchronized output.
+const RESET_CHILD_MODES: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?2004l\
+\x1b[?1l\x1b>\x1b[?25h\x1b[0m\x1b[?1004l\x1b[<u\x1b[?2026l\x1b[0 q";
+
+/// The `toggle_takeover` key (ctrl-t) as a raw byte.
+const CTRL_T: u8 = 0x14;
+
+/// While runs are live the screen is redrawn at least this often, so marks like
+/// `◆ quiet 12s` move with no input.
+const LIVE_REDRAW: Duration = Duration::from_millis(500);
+
+/// Redraws at most this often (about 60 fps).
+const FRAME: Duration = Duration::from_millis(16);
+
 /// Runs the TUI until the user quits; returns the process exit code.
-pub fn run(report: &Path, rpt_bin: &Path) -> i32 {
+pub fn run(report: &Path, rpt_bin: &Path, dev_run: Option<DevRun>) -> i32 {
     let client = Client::new(rpt_bin, report);
     let mut app = App::new(ReportView::load(&client, report));
     let mut terminal = ratatui::init();
-    let result = (|| -> std::io::Result<()> {
-        while !app.should_quit() {
-            terminal.draw(|f| app.draw(f))?;
-            if let Event::Key(k) = event::read()?
-                && k.kind == KeyEventKind::Press
-            {
-                app.handle_key(k);
-            }
-        }
-        Ok(())
-    })();
+    let result = main_loop(&mut terminal, &mut app, dev_run);
+    app.kill_all();
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
     match result {
         Ok(()) => 0,
@@ -195,4 +247,107 @@ pub fn run(report: &Path, rpt_bin: &Path) -> i32 {
             1
         }
     }
+}
+
+fn main_loop(terminal: &mut DefaultTerminal, app: &mut App, dev_run: Option<DevRun>) -> std::io::Result<()> {
+    execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    terminal.draw(|f| app.draw(f))?;
+    if let Some(d) = dev_run {
+        app.launch("dev-run", vec!["sh".into(), "-c".into(), d.command], d.display);
+    }
+    let mut last_draw = Instant::now();
+    let mut was_raw = false;
+    while !app.should_quit() {
+        if app.tick() || (app.any_live() && last_draw.elapsed() >= LIVE_REDRAW) {
+            app.runs.dirty.store(true, Ordering::Release);
+        }
+        if app.runs.raw_takeover().is_some() {
+            if !was_raw {
+                enter_raw(app)?;
+                was_raw = true;
+            }
+            raw_step(app)?;
+            continue;
+        }
+        if was_raw {
+            leave_raw(terminal)?;
+            was_raw = false;
+            app.runs.dirty.store(true, Ordering::Release);
+        }
+        if app.runs.dirty.load(Ordering::Acquire) && last_draw.elapsed() >= FRAME {
+            app.runs.dirty.store(false, Ordering::Release);
+            terminal.draw(|f| app.draw(f))?;
+            last_draw = Instant::now();
+        }
+        if event::poll(FRAME)? {
+            match event::read()? {
+                Event::Key(k) if k.kind == KeyEventKind::Press => app.handle_key(k),
+                Event::Mouse(m) => app.handle_mouse(m),
+                Event::Paste(text) => app.handle_paste(&text),
+                _ => {}
+            }
+            app.runs.dirty.store(true, Ordering::Release);
+        }
+    }
+    if was_raw {
+        leave_raw(terminal)?;
+    }
+    Ok(())
+}
+
+/// Hands the real terminal to the taken-over run: our mouse and paste modes off, then the
+/// run's screen and modes repainted, then its output tee'd straight through.
+fn enter_raw(app: &mut App) -> std::io::Result<()> {
+    execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste)?;
+    let full = app.runs.full;
+    if let Some(run) = app.runs.raw_takeover() {
+        run.resize(full);
+        run.start_tee(Box::new(std::io::stdout()));
+    }
+    Ok(())
+}
+
+/// One step of raw takeover: crossterm isn't polled; stdin bytes go straight to the run,
+/// except ctrl-t, which leaves takeover.
+fn raw_step(app: &mut App) -> std::io::Result<()> {
+    let (cols, rows) = crossterm::terminal::size()?;
+    let size = crate::run::Size { rows, cols };
+    if size != app.runs.full {
+        app.runs.full = size;
+        if let Some(run) = app.runs.raw_takeover() {
+            run.resize(size);
+        }
+    }
+    let mut fds = libc::pollfd { fd: libc::STDIN_FILENO, events: libc::POLLIN, revents: 0 };
+    // SAFETY: one valid pollfd for stdin.
+    if unsafe { libc::poll(&mut fds, 1, 30) } <= 0 {
+        return Ok(());
+    }
+    let mut buf = [0u8; 4096];
+    // SAFETY: reads at most buf.len() bytes into buf.
+    let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr().cast(), buf.len()) };
+    if n <= 0 {
+        return Ok(());
+    }
+    let data = &buf[..n as usize];
+    let Some(run) = app.runs.raw_takeover() else { return Ok(()) };
+    // Every byte goes to the run except ctrl-t, which leaves takeover (the run keeps the keys).
+    let toggled = data.contains(&CTRL_T);
+    run.send(data.iter().copied().filter(|&b| b != CTRL_T).collect::<Vec<u8>>());
+    if toggled {
+        app.runs.leave_takeover();
+    }
+    Ok(())
+}
+
+/// Takes the real terminal back: the child's modes reset, ours on again, a full redraw.
+fn leave_raw(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+    let mut out = std::io::stdout();
+    out.write_all(RESET_CHILD_MODES)?;
+    out.flush()?;
+    execute!(out, EnableMouseCapture, EnableBracketedPaste)?;
+    // Not `terminal.clear()`: it asks the terminal for the cursor position, and fails when
+    // nothing answers. A full-screen resize clears and forces a full redraw without asking.
+    let (cols, rows) = crossterm::terminal::size()?;
+    terminal.resize(ratatui::layout::Rect::new(0, 0, cols, rows))
 }
