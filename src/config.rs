@@ -6,10 +6,6 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-/// rpt's built-in verbs; a chain may not take one of these names.
-pub const RPT_VERBS: [&str; 10] =
-    ["add", "assemble", "delete", "findings", "plugins", "scope", "set", "severities", "validate", "version"];
-
 const CHAIN_KEYS: [&str; 9] =
     ["description", "key", "params", "needs", "ephemeral", "display", "takeover", "notify", "steps"];
 
@@ -160,6 +156,15 @@ pub fn expand_home(path: &Path, home: Option<&OsStr>) -> Option<PathBuf> {
         Ok(rest) => Some(PathBuf::from(home.filter(|h| !h.is_empty())?).join(rest)),
         Err(_) => Some(path.to_path_buf()),
     }
+}
+
+/// Leaves out the chains named like one of rpt's built-in `verbs` (from `rpt verbs`), each
+/// with an error.
+pub fn drop_chains_named_like_verbs(config: &mut Config, verbs: &[String]) {
+    let (clash, keep): (Vec<Chain>, Vec<Chain>) =
+        std::mem::take(&mut config.chains).into_iter().partition(|c| verbs.contains(&c.name));
+    config.chains = keep;
+    config.errors.extend(clash.iter().map(|c| format!("chain {name}: `{name}` is an rpt built-in", name = c.name)));
 }
 
 /// Reads the config file; a missing file is an empty config.
@@ -325,9 +330,6 @@ fn chain(name: &str, body: &Value) -> Result<Chain, String> {
     let ok_name = !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
     if !ok_name {
         return Err("a name is lowercase letters, digits and hyphens".into());
-    }
-    if RPT_VERBS.contains(&name) {
-        return Err(format!("`{name}` is an rpt built-in"));
     }
     let m = body.as_object().ok_or("not a map of chain keys")?;
     known_keys(m, &CHAIN_KEYS)?;

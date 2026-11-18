@@ -191,10 +191,23 @@ fn a_chain_name_is_lowercase_letters_digits_and_hyphens() {
 }
 
 #[test]
-fn a_chain_name_must_not_be_an_rpt_built_in() {
-    for verb in ["validate", "add", "set", "severities", "plugins"] {
-        broken(&one(verb, "steps: [true]"), verb, "rpt");
+fn a_chain_named_like_one_of_rpt_s_verbs_is_left_out() {
+    let verbs: Vec<String> = ["add", "new", "sections", "validate", "verbs"].map(String::from).into();
+    for verb in ["add", "new", "sections", "verbs"] {
+        let mut c = one(verb, "steps: [true]");
+        config::drop_chains_named_like_verbs(&mut c, &verbs);
+        broken(&c, verb, "rpt built-in");
     }
+}
+
+#[test]
+fn without_rpt_s_verbs_no_chain_name_is_checked_against_them() {
+    let mut c = one("new", "steps: [true]");
+
+    config::drop_chains_named_like_verbs(&mut c, &[]);
+
+    assert!(c.errors.is_empty(), "{:?}", c.errors);
+    chain(&c, "new");
 }
 
 #[test]

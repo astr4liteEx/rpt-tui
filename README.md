@@ -43,7 +43,7 @@ Inside a report folder (one holding `rpt.yaml`, or below it):
 rpt tui
 ```
 
-rpt finds `rpt-tui` on your `PATH` as a plugin. Running `rpt-tui` directly works too. The report is `$RPT_REPORT_DIR` when set, else the nearest folder at or above the current one with `rpt.yaml`. Outside a report, or without rpt on `PATH`, it says so and exits with code 2.
+rpt finds `rpt-tui` on your `PATH` as a plugin. Running `rpt-tui` directly works too. The report is `$RPT_REPORT_DIR` when set, else the nearest folder at or above the current one with `rpt.yaml`. Outside a report, or without rpt on `PATH`, it says so and exits with code 2. To start a report, run `rpt new <dir>`.
 
 ## The screen
 
@@ -72,9 +72,9 @@ Press `?` for every key, as currently bound. The footer shows the keys for where
 
 ## Running things
 
-Press `:` (or `ctrl-p`) for the **command palette**. It lists your chains, rpt's plugins, rpt built-ins (`validate`, `findings`, `scope`, `assemble`, `version`, `set`, `delete`) and rpt-tui's own actions. Type to filter; `enter` chooses.
+Press `:` (or `ctrl-p`) for the **command palette**. It lists your chains, rpt's plugins, rpt's built-in verbs as `rpt verbs` lists them (all but `add`, `new`, `plugins` and `verbs`) and rpt-tui's own actions. Type to filter; `enter` chooses.
 
-- A **plugin**, `set` or `delete` opens an argument line, pre-filled from its usage. `ctrl-f` inserts a file path.
+- A **plugin**, or an rpt verb that takes arguments such as `set` or `delete`, opens an argument line, pre-filled from its usage. `ctrl-f` inserts a file path.
 - A **chain** with parameters opens a form first (see [Chains](docs/config.md#chains)).
 - `e` opens the selected finding, or the selected problem at its line, in your editor (`$VISUAL`, `$EDITOR`, else `nvim`, `vim`, `vi` or `nano`).
 - `v` runs `rpt validate`.

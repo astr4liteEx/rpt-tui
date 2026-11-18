@@ -13,17 +13,16 @@ use crate::config::Step;
 use crate::keys::Action;
 use crate::rpt::{self, Client, Plugin};
 
-/// rpt's built-in verbs the palette offers, with the usage of those taking an argument line.
-/// `add` and `scope match` read stdin, so they are left to chains.
-const RPT_BUILTINS: [(&str, &str, Option<&str>); 7] = [
-    ("validate", "Check the report and list its problems", None),
-    ("findings", "List the report's findings", None),
-    ("scope", "List the report's scope", None),
-    ("assemble", "Assemble the report into one JSON document", None),
-    ("version", "Show rpt's version and formats", None),
-    ("set", "Set a field of a finding", Some("rpt set <id> <key> <value>")),
-    ("delete", "Delete findings", Some("rpt delete <id>...")),
-];
+/// rpt's built-in verbs the palette leaves out: `add` reads stdin, so it is for chains (as is
+/// `scope match`); `new` can't make a report inside one, where the TUI always is; `plugins` and
+/// `verbs` the palette lists itself.
+const UNOFFERED_VERBS: [&str; 4] = ["add", "new", "plugins", "verbs"];
+
+/// A verb takes an argument line when its usage, after `rpt <verb>`, starts with a `<…>`
+/// placeholder, as `rpt set <id> <key> <value>` does.
+fn takes_arguments(v: &rpt::Verb) -> bool {
+    v.usage.strip_prefix(&format!("rpt {}", v.name)).is_some_and(|rest| rest.trim_start().starts_with('<'))
+}
 
 /// Actions the palette leaves out: list movement, run keys, and those with a row of their own
 /// (`validate` is rpt's, `edit` a chain's).
@@ -118,10 +117,10 @@ impl App {
         if let Plugins::Ready(list) = &self.plugins {
             out.extend(list.iter().map(plugin_entry));
         }
-        for (name, summary, usage) in RPT_BUILTINS {
-            let mut e = Entry::new(Kind::Rpt, name, summary);
-            e.args = usage.map(String::from);
-            e.key = if name == "validate" { written(Action::Validate) } else { None };
+        for v in self.verbs.iter().filter(|v| !UNOFFERED_VERBS.contains(&v.name.as_str())) {
+            let mut e = Entry::new(Kind::Rpt, &v.name, &v.summary);
+            e.args = takes_arguments(v).then(|| v.usage.clone());
+            e.key = if v.name == "validate" { written(Action::Validate) } else { None };
             out.push(e);
         }
         let fixable = self.fixable_troubles() > 0;

@@ -164,3 +164,19 @@ fn sections_come_back_in_rpt_order_with_the_report_s_headings() {
         ]
     );
 }
+
+#[test]
+fn verbs_lists_rpt_s_built_ins_with_their_summary_and_usage() {
+    let report = common::fixture();
+    let client = Client::new(common::rpt_bin(), report.path());
+
+    let verbs = client.verbs().unwrap();
+
+    let names: Vec<&str> = verbs.iter().map(|v| v.name.as_str()).collect();
+    for name in ["add", "new", "sections", "set", "validate", "verbs"] {
+        assert!(names.contains(&name), "{name} missing from {names:?}");
+    }
+    let set = verbs.iter().find(|v| v.name == "set").unwrap();
+    assert_eq!(set.summary, "Change one frontmatter value of a finding");
+    assert_eq!(set.usage, "rpt set <id> <key> <value>");
+}

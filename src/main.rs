@@ -50,8 +50,9 @@ fn run() -> i32 {
 /// Finds the report root and the rpt binary, or says why not.
 fn locate() -> Result<Startup, String> {
     let cwd = std::env::current_dir().map_err(|e| format!("cannot read the current folder: {e}"))?;
-    let report = rpt::find_report(&cwd, std::env::var_os("RPT_REPORT_DIR").as_deref())
-        .ok_or("no report: run inside a folder with rpt.yaml, or set RPT_REPORT_DIR")?;
+    let report = rpt::find_report(&cwd, std::env::var_os("RPT_REPORT_DIR").as_deref()).ok_or(
+        "no report: run inside a folder with rpt.yaml, set RPT_REPORT_DIR, or create one with `rpt new <dir>`",
+    )?;
     let rpt = rpt::find_on_path(&std::env::var_os("PATH").unwrap_or_default())
         .ok_or("rpt not found on PATH: install rpt first")?;
     Ok(Startup { report, rpt })

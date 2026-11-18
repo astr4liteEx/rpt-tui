@@ -47,7 +47,10 @@ fn with_plugins(plugins: tempfile::TempDir) -> Fixture {
     // The plugins, then just enough system for bash: no plugins the machine happens to have.
     let path = format!("{}:/usr/bin:/bin", plugins.path().display());
     let client = Client::new(common::rpt_bin(), report.path()).with_path(path.as_ref());
-    let app = App::new(client);
+    with_app(App::new(client), report, plugins)
+}
+
+fn with_app(app: App, report: tempfile::TempDir, plugins: tempfile::TempDir) -> Fixture {
     Fixture { app, term: Terminal::new(TestBackend::new(100, 24)).unwrap(), report, _plugins: plugins }
 }
 
@@ -225,4 +228,70 @@ fn v_runs_validate_in_the_pane() {
     let s = fx.until("S-99");
 
     assert!(s.contains("rpt validate"), "{s}");
+}
+
+#[test]
+fn rpt_rows_come_from_rpt_verbs_with_rpt_s_own_summary() {
+    let mut fx = fixture();
+
+    fx.typ(":sections");
+    let s = fx.draw();
+
+    assert!(s.contains("rpt    sections           List the report's sections, headings"), "{s}");
+}
+
+#[test]
+fn add_new_plugins_and_verbs_are_not_offered_as_rpt_rows() {
+    let mut fx = fixture();
+    fx.until("Say hello"); // plugins listed, so the palette is complete
+    for (verb, summary) in [
+        ("add", "Add finding records as new finding files"),
+        ("new", "Create an empty report"),
+        ("plugins", "List the plugins on PATH"),
+        ("verbs", "List rpt's built-in verbs"),
+    ] {
+        fx.typ(&format!(":{verb}"));
+        let s = fx.draw();
+        assert!(!s.contains(summary), "{verb} is offered: {s}");
+        fx.key(KeyCode::Esc);
+    }
+}
+
+#[test]
+fn a_verb_whose_usage_takes_no_placeholder_runs_at_once() {
+    let mut fx = fixture();
+
+    fx.typ(":sections");
+    fx.key(KeyCode::Enter);
+    let s = fx.until("HEADING");
+
+    assert!(s.contains("HEADING"), "rpt sections ran in a pane: {s}");
+}
+
+#[test]
+fn when_rpt_verbs_fails_a_toast_says_why_and_there_are_no_rpt_rows_or_verb_checks() {
+    let report = common::fixture();
+    // A stand-in rpt whose verbs verb fails; every other verb goes to the real rpt.
+    let fake = common::stand_in_rpt(
+        report.path(),
+        "rpt-no-verbs",
+        &format!(
+            "if [ \"$1\" = verbs ]; then echo 'rpt: verbs broke' >&2; exit 2; fi\nexec {} \"$@\"\n",
+            common::rpt_bin().display()
+        ),
+    );
+    let config = rpt_tui::config::load("chains:\n  new:\n    description: My own new\n    steps: [true]\n");
+    let app = App::with_config(Client::new(&fake, report.path()), config);
+    let mut fx = with_app(app, report, tempfile::tempdir().unwrap());
+
+    let home = fx.draw();
+    fx.typ(":validate");
+    let validate = fx.draw();
+    fx.key(KeyCode::Esc);
+    fx.typ(":new");
+    let new = fx.draw();
+
+    assert!(home.contains("verbs broke"), "{home}");
+    assert!(!validate.contains("rpt    validate"), "{validate}");
+    assert!(new.contains("My own new"), "the chain isn't checked against verbs: {new}");
 }

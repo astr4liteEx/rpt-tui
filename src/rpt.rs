@@ -158,6 +158,15 @@ pub struct Plugin {
     pub output: Option<String>,
 }
 
+/// A `verb` record from `rpt verbs`: one of rpt's built-ins, described the way a plugin's
+/// `--describe` describes a plugin.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Verb {
+    pub name: String,
+    pub summary: String,
+    pub usage: String,
+}
+
 /// Runs rpt verbs in one report.
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -221,6 +230,11 @@ impl Client {
     /// requires, in rpt's order.
     pub fn sections(&self) -> Result<Vec<Section>, Error> {
         self.records("sections", "section")
+    }
+
+    /// `rpt verbs`: a record for each of rpt's built-in verbs, in name order.
+    pub fn verbs(&self) -> Result<Vec<Verb>, Error> {
+        self.records("verbs", "verb")
     }
 
     /// Runs `rpt <verb> --json` and parses each line whose `kind` is `kind`; other kinds are skipped.

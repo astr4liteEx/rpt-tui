@@ -54,7 +54,7 @@ If the file is written in a way it can't safely edit, it leaves the file alone. 
 `chains:` holds your own commands, keyed by name, in the order the palette lists them.
 
 - A name is lowercase letters, digits and hyphens.
-- It can't be an rpt built-in verb (`add` included) or a plugin's name.
+- It can't be one of rpt's built-in verbs (any `rpt verbs` lists, `add` and `new` included) or a plugin's name. A chain named like a verb is left out, with a toast at start-up or on `reload-config`.
 - A chain named like a plugin is found once plugins are listed. It is then left out, with a toast.
 
 | Key | Value | Default |

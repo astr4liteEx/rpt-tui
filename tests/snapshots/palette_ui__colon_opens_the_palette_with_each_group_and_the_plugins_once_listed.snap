@@ -12,17 +12,17 @@ expression: s
 │       │   plugin greet              Say hello  text → records                            │ into  │
 │       │   plugin odd                Odd usage                                            │       │
 │       │  rpt                                                                             │       │
-│       │   rpt    validate           Check the report and list its problems             v │       │
-│       │   rpt    findings           List the report's findings                           │       │
-│       │   rpt    scope              List the report's scope                              │       │
-│       │   rpt    assemble           Assemble the report into one JSON document           │       │
-╰ 1 high│   rpt    version            Show rpt's version and formats                       │       │
-╭ 2 Prob│   rpt    set                Set a field of a finding                             │       │
-│ ▌✘ err│   rpt    delete             Delete findings                                      │       │
-╰───────│  TUI actions                                                                     │       │
-╭ 3 Runs│   tui    quit               Quit rpt-tui                               q, ctrl-c │       │
-│ No run│   tui    help               List the keys                                      ? │       │
-│       │   tui    focus_next         Focus the next panel                             tab │       │
-│       │   tui    focus_findings     Focus Findings                                     1 │       │
+│       │   rpt    assemble           Print the whole report as one record for renderers   │       │
+│       │   rpt    delete             Remove findings; their evidence stays                │       │
+│       │   rpt    findings           List the findings                                    │       │
+│       │   rpt    scope              List scope rows; scope match adds matching scope I…  │       │
+╰ 1 high│   rpt    sections           List the report's sections, headings and which are…  │       │
+╭ 2 Prob│   rpt    set                Change one frontmatter value of a finding            │       │
+│ ▌✘ err│   rpt    severities         List the report's severity levels, most severe fir…  │       │
+╰───────│   rpt    validate           Check the report and print its problems            v │       │
+╭ 3 Runs│   rpt    version            Print the rpt, record schema and report format ver…  │       │
+│ No run│  TUI actions                                                                     │       │
+│       │   tui    quit               Quit rpt-tui                               q, ctrl-c │       │
+│       │   tui    help               List the keys                                      ? │       │
 ╰───────╰──────────────────────────────────────────────────────────────────────────────────╯───────╯
  : commands · e edit · enter open · v validate · j/k move · tab focus · ? help · q quit

@@ -73,3 +73,14 @@ fn a_run_that_changes_a_theme_file_reloads_when_it_ends() {
 
     assert_eq!(bg(&mut s), LIGHT);
 }
+
+#[test]
+fn reload_config_leaves_out_a_chain_named_like_an_rpt_verb() {
+    let mut s = AppScreen::from_file("");
+    s.write_config("config.yaml", "chains:\n  new:\n    steps: ['echo mine']\n");
+
+    s.choose("reload-config");
+
+    let out = s.draw();
+    assert!(out.contains("chain new: `new` is an rpt built-in"), "{out}");
+}

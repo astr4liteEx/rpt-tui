@@ -124,6 +124,11 @@ fn keep_or<T>(r: Result<T, rpt::Error>, errors: &mut Vec<String>, what: &str, de
     })
 }
 
+/// The names of rpt's built-in verbs.
+fn verb_names(verbs: &[rpt::Verb]) -> Vec<String> {
+    verbs.iter().map(|v| v.name.clone()).collect()
+}
+
 /// The focused panel; keys can be scoped to panels too.
 pub use crate::keys::Panel as Focus;
 
@@ -164,12 +169,14 @@ pub struct App {
     quit: bool,
     client: Client,
     plugins: commands::Plugins,
+    /// rpt's built-in verbs from `rpt verbs`, read once at start-up; empty if it failed.
+    verbs: Vec<rpt::Verb>,
     palette: Option<palette::State>,
     /// Commands used this session, most recent first (`plugin greet`).
     recent: Vec<String>,
     /// `$VISUAL` and `$EDITOR`, as rpt-tui was started with.
     editor_env: (Option<String>, Option<String>),
-    /// Chains from the config, less any named like a plugin.
+    /// Chains from the config, less any named like an rpt verb or a plugin.
     chains: Vec<Chain>,
     /// `file_picker:` from the config.
     file_picker: Option<String>,
@@ -253,11 +260,20 @@ impl App {
 
     /// The app on `config`, read from `config_path` if from a file; hex colours are drawn as
     /// the nearest of the 256 without `truecolor`.
-    fn open(client: Client, config: Config, config_path: Option<PathBuf>, truecolor: bool) -> App {
+    fn open(client: Client, mut config: Config, config_path: Option<PathBuf>, truecolor: bool) -> App {
+        // rpt's verbs come first: chains named like one are config errors.
+        let mut verb_errors = vec![];
+        let verbs = keep(client.verbs(), &mut verb_errors).unwrap_or_default();
+        crate::config::drop_chains_named_like_verbs(&mut config, &verb_names(&verbs));
         let view = ReportView::load(&client, client.report());
         let bindings = Bindings::new(&config.keys, &config.chains);
         let unfixable = bindings.troubles.iter().filter(|t| t.side().is_none()).map(|t| t.to_string());
-        let mut errors: Vec<String> = view.errors.iter().chain(&config.errors).cloned().chain(unfixable).collect();
+        let mut errors: Vec<String> = verb_errors
+            .into_iter()
+            .chain(view.errors.iter().cloned())
+            .chain(config.errors.iter().cloned())
+            .chain(unfixable)
+            .collect();
         let config_dir = config_path.as_deref().and_then(Path::parent);
         let (theme, theme_errors) = theme::resolve(config.theme.as_ref(), config_dir, truecolor);
         errors.extend(theme_errors);
@@ -294,6 +310,7 @@ impl App {
             runs: Runs::default(),
             quit: false,
             plugins: commands::Plugins::load(&client),
+            verbs,
             client,
             palette: None,
             recent,

@@ -61,7 +61,8 @@ impl App {
             self.toast = Some("no config file to reload".into());
             return;
         };
-        let new = config::load_file(&path);
+        let mut new = config::load_file(&path);
+        config::drop_chains_named_like_verbs(&mut new, &super::verb_names(&self.verbs));
         let mut errors = new.errors.clone();
         if new.history != self.config_files.history {
             errors.push("history: changes apply at the next start".into());

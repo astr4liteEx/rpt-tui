@@ -27,7 +27,7 @@ fn describe_answers_the_plugin_protocol() {
 }
 
 #[test]
-fn outside_a_report_it_exits_2_with_a_message() {
+fn outside_a_report_it_exits_2_with_a_message_pointing_at_rpt_new() {
     let plain = tempfile::tempdir().unwrap();
 
     let out = rpt_tui(plain.path(), common::rpt_dir().as_os_str(), &[]);
@@ -35,6 +35,7 @@ fn outside_a_report_it_exits_2_with_a_message() {
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.starts_with("rpt-tui: no report"), "stderr was {stderr:?}");
+    assert!(stderr.contains("or create one with `rpt new <dir>`"), "stderr was {stderr:?}");
 }
 
 #[test]

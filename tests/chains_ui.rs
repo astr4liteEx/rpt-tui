@@ -189,3 +189,12 @@ fn run_tmp_is_gone_once_the_chain_ends() {
     let tmp = std::fs::read_to_string(s.report.path().join("where.txt")).unwrap();
     assert!(!std::path::Path::new(tmp.trim()).exists(), "{tmp}");
 }
+
+#[test]
+fn a_chain_named_like_an_rpt_verb_is_left_out_with_a_startup_toast() {
+    let mut s = AppScreen::new("chains:\n  sections:\n    steps: ['echo mine']\n", tempfile::tempdir().unwrap());
+
+    let out = s.draw();
+
+    assert!(out.contains("chain sections: `sections` is an rpt built-in"), "{out}");
+}
