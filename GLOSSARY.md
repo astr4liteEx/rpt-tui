@@ -1,6 +1,6 @@
 # rpt-tui
 
-A terminal UI that runs inside one rpt report and launches rpt, its plugins and user-defined chains. Report, finding, plugin and core mean what `../rpt/GLOSSARY.md` says.
+A terminal UI that runs inside one rpt report and launches rpt, its plugins and user-defined chains. Report, finding, plugin and core mean what [rpt's glossary](https://github.com/astr4liteEx/rpt/blob/main/GLOSSARY.md) says.
 
 **Command**:
 Anything the TUI can launch: an rpt built-in verb, a plugin, a chain, or the editor.

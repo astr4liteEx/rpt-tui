@@ -1,4 +1,4 @@
-//! Shared test helpers: the real rpt from ../rpt/dist and a writable copy of rpt's fixture report.
+//! Shared test helpers: an rpt built from ../rpt's source and a writable copy of rpt's fixture report.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};

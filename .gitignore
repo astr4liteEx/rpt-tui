@@ -1,2 +1,9 @@
 target/
 dist/
+
+# Private agent and planning files
+.scratch/
+CLAUDE.md
+docs/agents/
+prototypes/
+.claude/

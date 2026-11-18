@@ -160,4 +160,4 @@ scripts/check.sh           # fmt, clippy, tests and cargo audit
 scripts/release.sh         # on a clean tree tagged v<version>: dist/ archives and SHA256SUMS
 ```
 
-The tests build rpt from source in `../rpt`. `scripts/release.sh` needs the `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` targets (`rustup target add …`).
+The tests build rpt from source: clone [rpt](https://github.com/astr4liteEx/rpt) next to this repo (as `../rpt`) and install Go. `scripts/release.sh` needs the `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` targets (`rustup target add …`).
