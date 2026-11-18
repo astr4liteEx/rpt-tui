@@ -1,0 +1,27 @@
+# Runs every check on each push and pull request. All the steps live in
+# scripts/check.sh, so running that script locally is running CI.
+#
+# The tests build rpt from ../rpt and use its fixture report, so rpt is checked
+# out beside this repo, pinned to the release rpt-tui is built against.
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rpt-tui
+      - uses: actions/checkout@v4
+        with:
+          repository: astr4liteEx/rpt
+          ref: v0.1.0
+          path: rpt
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: rpt/go.mod
+      # rustup reads rust-toolchain.toml, so the pinned toolchain installs itself.
+      - run: cargo install cargo-audit --locked
+      - run: rpt-tui/scripts/check.sh
