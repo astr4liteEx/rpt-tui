@@ -1,16 +1,41 @@
+<div align="center">
+
 # rpt-tui
 
-A terminal UI for one [rpt](https://github.com/astr4liteEx/rpt) report. It shows the report's findings and problems, and runs rpt commands, plugins, your own chains of commands and your editor inside it. Each run is a real terminal, so a plugin can draw its own menus and pickers.
+**A terminal UI for your [rpt](https://github.com/astr4liteEx/rpt) report.**
 
-rpt-tui never writes report files itself: every change goes through rpt, a plugin or your editor.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Rust 1.99+](https://img.shields.io/badge/rust-1.99%2B-orange.svg)
+![Linux amd64 | arm64](https://img.shields.io/badge/platform-linux%20amd64%20%7C%20arm64-lightgrey.svg)
 
-Linux only (amd64 and arm64).
+[Features](#features) • [Install](#install) • [Usage](#usage) • [Configure](#configure) • [Development](#development)
+
+</div>
+
+rpt-tui opens on one rpt report and shows its findings and problems side by side with everything you run against it: rpt commands, plugins, your own chains of commands and your editor. Each run is a real terminal inside a pane, so a plugin can draw its own menus and pickers.
+
+![The home screen: findings, problems and runs on the left, the selected item on the right](docs/demo/screen.gif)
+
+> [!IMPORTANT]
+> rpt-tui never writes report files itself. Every change goes through rpt, a plugin or your editor.
+
+## Features
+
+- **Findings and problems at a glance**: findings sorted most severe first using the report's own severity levels, and what `rpt validate` reports, refreshed after every run.
+- **Command palette**: rpt built-ins, plugins, your chains and rpt-tui's own actions, filtered as you type.
+- **Live runs in a pane**: real terminals that can go full screen, kept with their transcripts across sessions.
+- **Chains**: your own multi-step commands, with parameters asked for in a form and an optional hotkey.
+- **Selection-aware**: every run gets the selected finding or problem in its environment; `e` opens it in your editor at the right line.
+- **Notifications**: toasts for runs that end out of sight, and desktop notifications for long ones.
+- **Configurable**: three built-in themes or your own, rebindable keys, a forgiving config that never blocks startup.
 
 ## Install
 
-rpt-tui needs rpt on your `PATH`.
+rpt-tui runs on Linux (amd64 and arm64) and needs `rpt` on your `PATH`.
 
-**From a release:** download the archive for your machine and `SHA256SUMS`, check, unpack, and put `rpt-tui` on your `PATH`:
+### From a release
+
+Download the archive for your machine and `SHA256SUMS` from the [releases](https://github.com/astr4liteEx/rpt-tui/releases), then check, unpack and install:
 
 ```sh
 sha256sum -c --ignore-missing SHA256SUMS
@@ -20,68 +45,52 @@ install rpt-tui ~/.local/bin/
 
 The binaries are static, so they run on any Linux.
 
-**With cargo** (Rust 1.99 or newer):
+### With cargo
+
+Requires Rust 1.99 or newer:
 
 ```sh
 cargo install --git https://github.com/astr4liteEx/rpt-tui --tag v0.1.0 --locked
 ```
 
-This puts `rpt-tui` in `~/.cargo/bin`. For a static binary, add the musl target first and link with Rust's own linker:
+> [!TIP]
+> For a static binary, add the musl target and link with Rust's own linker:
+>
+> ```sh
+> rustup target add x86_64-unknown-linux-musl
+> CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
+>   cargo install --git https://github.com/astr4liteEx/rpt-tui --tag v0.1.0 --locked \
+>   --target x86_64-unknown-linux-musl
+> ```
 
-```sh
-rustup target add x86_64-unknown-linux-musl
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
-  cargo install --git https://github.com/astr4liteEx/rpt-tui --tag v0.1.0 --locked \
-  --target x86_64-unknown-linux-musl
-```
+## Usage
 
-## Start
-
-Inside a report folder (one holding `rpt.yaml`, or below it):
+From inside a report folder (one holding `rpt.yaml`, or anywhere below it):
 
 ```sh
 rpt tui
 ```
 
-rpt finds `rpt-tui` on your `PATH` as a plugin. Running `rpt-tui` directly works too. The report is `$RPT_REPORT_DIR` when set, else the nearest folder at or above the current one with `rpt.yaml`. Outside a report, or without rpt on `PATH`, it says so and exits with code 2. To start a report, run `rpt new <dir>`.
+rpt finds `rpt-tui` on your `PATH` as a plugin; running `rpt-tui` directly works too. The report is `$RPT_REPORT_DIR` when set, else the nearest folder at or above the current one with `rpt.yaml`. Outside a report, or without rpt on `PATH`, it says so and exits with code 2. To start a report, run `rpt new <dir>`.
 
-## The screen
+### The screen
 
-```
- rpt-tui   ~/eng/acme-ext/report   12 findings  2 errors 1 warning
-╭ 1 Findings ──────────────────────╮╭ Preview / Problem / Run ───────────────╮
-│ ▌F-004 ● critical Unauth RCE …   ││                                         │
-│  F-012 ● critical Kerberoast …   ││  the right side follows focus:          │
-╰ 2 critical 3 high 3 medium … ────╯│   Findings → the finding                │
-╭ 2 Problems ──────────────────────╮│   Problems → the problem                │
-│ ✘ error Remediation is empty …   ││   Runs     → the selected run           │
-╰──────────────────────────────────╯│                                         │
-╭ 3 Runs · 2 new · 1 ✘ ────────────╮│                                         │
-│ ● live  import-nessus SCAN=…     ││                                         │
-│ ✔ 0     rpt validate   3m ago    ││                                         │
-╰──────────────────────────────────╯╰─────────────────────────────────────────╯
- key hints for the focused panel
-```
+`1`, `2`, `3` (or `tab`) move focus between the panels, and the right side follows. **Runs** lists live runs first, then finished ones newest first, including runs from earlier sessions (dimmed). Press `?` for every key as currently bound.
 
-- **Findings** are sorted most severe first, using the report's own severity levels.
-- **Problems** are what `rpt validate` reports.
-- **Runs** lists live runs first, then finished ones, newest first, including runs from earlier sessions (dimmed). The right side shows the selected run.
-- After any run ends, findings and problems are read again.
+### Running things
 
-Press `?` for every key, as currently bound. The footer shows the keys for where you are.
+Press `:` or `ctrl-p` for the **command palette**. It lists your chains, rpt's plugins, rpt's built-in verbs as `rpt verbs` lists them (all but `add`, `new`, `plugins` and `verbs`) and rpt-tui's own actions.
 
-## Running things
+![Running rpt validate, rpt set and a chain from the command palette](docs/demo/palette.gif)
 
-Press `:` (or `ctrl-p`) for the **command palette**. It lists your chains, rpt's plugins, rpt's built-in verbs as `rpt verbs` lists them (all but `add`, `new`, `plugins` and `verbs`) and rpt-tui's own actions. Type to filter; `enter` chooses.
-
-- A **plugin**, or an rpt verb that takes arguments such as `set` or `delete`, opens an argument line, pre-filled from its usage. `ctrl-f` inserts a file path.
-- A **chain** with parameters opens a form first (see [Chains](docs/config.md#chains)).
+- A **plugin**, or an rpt verb that takes arguments such as `set` or `delete`, opens an argument line pre-filled from its usage; `ctrl-f` inserts a file path.
+- A **chain** with parameters opens a form first.
 - `e` opens the selected finding, or the selected problem at its line, in your editor (`$VISUAL`, `$EDITOR`, else `nvim`, `vim`, `vi` or `nano`).
 - `v` runs `rpt validate`.
 
 Every run starts in the report folder with these environment variables:
 
-| Variable | What it holds |
+| Variable | Holds |
 |---|---|
 | `RPT_REPORT_DIR` | the report folder |
 | `RPT_FINDING_ID`, `RPT_FINDING_FILE` | the selected finding, when one is selected |
@@ -90,20 +99,21 @@ Every run starts in the report folder with these environment variables:
 
 The selection is the highlighted row of whichever of Findings and Problems you used last.
 
-### Runs
+### Working with runs
 
 A new run gets your keys straight away, so a plugin's menu works at once.
 
-| Key | What it does |
+| Key | Does |
 |---|---|
 | `ctrl-g` | give the keys back to rpt-tui |
 | `ctrl-t` | switch between the pane and full screen (takeover) |
-| `enter` | on a live run: give it the keys; on a finished one: its full transcript |
+| `enter` | live run: give it the keys; finished run: show its full transcript |
 | `f` | take over the selected run |
 | `r` | run a finished run again, with the same values |
 | `x` | kill a live run, or delete a finished one (asks first) |
 
-The marks in Runs:
+<details>
+<summary>What the marks in Runs mean</summary>
 
 | Mark | Meaning |
 |---|---|
@@ -114,26 +124,27 @@ The marks in Runs:
 | `killed` | killed by you, or on quit |
 | `✘ <signal>` | ended by a signal rpt-tui didn't send |
 
-Runs are kept between sessions (see [`history:`](docs/config.md#history)). The palette's `export-transcript` saves a run's output as plain text, and `clear-history` empties the report's history.
+</details>
 
-### When a run ends
+Runs are kept between sessions. From the palette, `export-transcript` saves a run's output as plain text and `clear-history` empties the report's history.
 
-- A run that ends while you aren't looking at it gets a toast (4 s, or 10 s for a failure) and a "new" dot, counted in the Runs title.
-- A run that took 30 s or more and ended while you weren't watching sends a desktop notification. "Not watching" means it was in the background, or the terminal didn't have focus. Your terminal must support OSC 9 or OSC 777 notifications (rpt-tui picks which).
-- **Inside tmux**, notifications need passthrough. Add this to `~/.tmux.conf`:
+### Notifications
 
-  ```
-  set -g allow-passthrough on
-  ```
+A run that ends while you aren't looking at it gets a toast and a "new" dot, counted in the Runs title. A run that took 30 s or more and ended while you weren't watching (in the background, or the terminal didn't have focus) also sends a desktop notification through OSC 9 or OSC 777, whichever your terminal supports.
 
-The bell, a custom command and the 30 s threshold are set under [`notify:`](docs/config.md#notify).
+> [!TIP]
+> Inside tmux, notifications need passthrough. Add this to `~/.tmux.conf`:
+>
+> ```
+> set -g allow-passthrough on
+> ```
 
 ## Configure
 
-The config is `~/.config/rpt-tui/config.yaml` (or `$XDG_CONFIG_HOME/rpt-tui/config.yaml`). Every key is optional. A small one:
+The config lives at `~/.config/rpt-tui/config.yaml` (or `$XDG_CONFIG_HOME/rpt-tui/config.yaml`). Every key is optional:
 
 ```yaml
-theme: terminal
+theme: terminal          # charm (default), terminal, light or your own
 keys:
   help: f1
 chains:
@@ -146,18 +157,23 @@ chains:
       - rpt assemble | rpt render-pdf --client "$CLIENT"
 ```
 
-A mistake in the config never stops rpt-tui from starting: it shows what's wrong in a toast and carries on without that part. Key clashes open a guide that fixes them for you.
+> [!NOTE]
+> A mistake in the config never stops rpt-tui from starting: it shows what's wrong in a toast and carries on without that part. Key clashes open a guide that fixes them for you.
 
-After editing the config in a run (`e` on a file, or your own chain), rpt-tui reads it again when the run ends. The palette's `reload-config` does it any time.
+The config is read again when a run that edited it ends, or any time you choose `reload-config` in the palette.
 
-**Everything you can set is in [docs/config.md](docs/config.md):** themes, keys, chains and their parameters, the file picker, history and notifications.
+**[docs/config.md](docs/config.md) covers everything you can set:** [chains](docs/config.md#chains) and their parameters, [keys](docs/config.md#keys), [themes](docs/config.md#themes), the [file picker](docs/config.md#file_picker), [history](docs/config.md#history) and [notifications](docs/config.md#notify).
 
-## Build from source
+## Development
 
 ```sh
 cargo build --release      # target/release/rpt-tui
 scripts/check.sh           # fmt, clippy, tests and cargo audit
 scripts/release.sh         # on a clean tree tagged v<version>: dist/ archives and SHA256SUMS
+docs/demo/setup.sh && vhs docs/demo/screen.tape   # re-record a README GIF (needs vhs and rpt)
 ```
 
-The tests build rpt from source: clone [rpt](https://github.com/astr4liteEx/rpt) next to this repo (as `../rpt`) and install Go. `scripts/release.sh` needs the `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` targets (`rustup target add …`).
+> [!NOTE]
+> The tests build rpt from source: clone [rpt](https://github.com/astr4liteEx/rpt) next to this repo (as `../rpt`) and install Go. `scripts/release.sh` also needs the `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` targets (`rustup target add …`).
+
+The project's vocabulary is in [GLOSSARY.md](GLOSSARY.md), and design decisions are recorded in [docs/adr/](docs/adr/).
