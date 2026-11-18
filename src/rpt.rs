@@ -31,6 +31,14 @@ pub fn default_severities() -> Vec<String> {
     DEFAULT_SEVERITIES.iter().map(|s| s.to_string()).collect()
 }
 
+/// rpt's fixed sections with their default headings, used when `rpt sections` fails.
+pub fn default_sections() -> Vec<Section> {
+    [("description", "Description"), ("remediation", "Remediation"), ("poc", "Proof of concept")]
+        .into_iter()
+        .map(|(key, heading)| Section { key: key.into(), heading: heading.into(), fixed: true, required: true })
+        .collect()
+}
+
 /// The record schema version this rpt-tui understands.
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -81,6 +89,18 @@ pub struct Finding {
 struct Severity {
     level: String,
     rank: u32,
+}
+
+/// A `section` record from `rpt sections`: a section's key (what findings' `sections` are
+/// keyed by) and the `##` heading this report gives it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Section {
+    pub key: String,
+    pub heading: String,
+    /// One of the three fixed sections (`description`, `remediation`, `poc`).
+    pub fixed: bool,
+    /// Every finding must have it, non-empty.
+    pub required: bool,
 }
 
 /// A `problem` record from `rpt validate`: one broken rule, at a file and maybe a line.
@@ -195,6 +215,12 @@ impl Client {
         let mut levels: Vec<Severity> = self.records("severities", "severity")?;
         levels.sort_by_key(|s| s.rank);
         Ok(levels.into_iter().map(|s| s.level).collect())
+    }
+
+    /// `rpt sections`: the fixed sections with this report's headings, then the custom ones it
+    /// requires, in rpt's order.
+    pub fn sections(&self) -> Result<Vec<Section>, Error> {
+        self.records("sections", "section")
     }
 
     /// Runs `rpt <verb> --json` and parses each line whose `kind` is `kind`; other kinds are skipped.

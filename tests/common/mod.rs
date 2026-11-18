@@ -33,6 +33,10 @@ pub fn rpt_bin() -> PathBuf {
     rpt_dir().join("rpt")
 }
 
+/// An `rpt.yaml` that renames `remediation` to Recommendation and requires a custom Risk section.
+pub const RENAMED_SECTIONS_CONFIG: &str =
+    "format: 1\nrequired_sections: [description, Risk]\nsections:\n  remediation: Recommendation\n";
+
 /// A fresh, writable copy of rpt's fixture report.
 pub fn fixture() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();

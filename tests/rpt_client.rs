@@ -143,3 +143,24 @@ fn the_path_runs_get_puts_this_rpt_first() {
 
     assert_eq!(path.to_str().unwrap(), format!("{}:/usr/bin:/bin", common::rpt_dir().display()));
 }
+
+#[test]
+fn sections_come_back_in_rpt_order_with_the_report_s_headings() {
+    let report = common::fixture();
+    std::fs::write(report.path().join("rpt.yaml"), common::RENAMED_SECTIONS_CONFIG).unwrap();
+    let client = Client::new(common::rpt_bin(), report.path());
+
+    let sections = client.sections().unwrap();
+
+    let got: Vec<(&str, &str, bool, bool)> =
+        sections.iter().map(|s| (s.key.as_str(), s.heading.as_str(), s.fixed, s.required)).collect();
+    assert_eq!(
+        got,
+        [
+            ("description", "Description", true, true),
+            ("remediation", "Recommendation", true, false),
+            ("poc", "Proof of concept", true, false),
+            ("Risk", "Risk", false, true),
+        ]
+    );
+}

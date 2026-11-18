@@ -17,7 +17,16 @@ fn fixture_app() -> (App, tempfile::TempDir) {
 
 /// Renders a frame and returns it as text, one line per row, with the temp report path masked.
 fn screen(app: &mut App, report: &std::path::Path) -> String {
-    let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    screen_rows(app, report, 24)
+}
+
+/// A frame tall enough for a whole finding in the full view.
+fn tall_screen(app: &mut App, report: &std::path::Path) -> String {
+    screen_rows(app, report, 60)
+}
+
+fn screen_rows(app: &mut App, report: &std::path::Path, rows: u16) -> String {
+    let mut term = Terminal::new(TestBackend::new(100, rows)).unwrap();
     term.draw(|f| app.draw(f)).unwrap();
     let buf = term.backend().buffer();
     let text: Vec<String> = (0..buf.area.height).map(|y| common::row_text(buf, y)).collect();
@@ -146,13 +155,13 @@ fn findings_are_listed_most_severe_first() {
 }
 
 #[test]
-fn an_rpt_without_the_severities_verb_falls_back_to_the_defaults_with_a_toast() {
+fn when_rpt_severities_fails_findings_sort_by_the_default_levels_and_a_toast_says_why() {
     let report = common::fixture();
     let fake = common::stand_in_rpt(
         report.path(),
-        "rpt-old",
+        "rpt-no-severities",
         &format!(
-            "if [ \"$1\" = severities ]; then echo 'rpt: unknown verb \"severities\"' >&2; exit 2; fi\nexec {} \"$@\"\n",
+            "if [ \"$1\" = severities ]; then echo 'rpt: severities broke' >&2; exit 2; fi\nexec {} \"$@\"\n",
             common::rpt_bin().display()
         ),
     );
@@ -161,6 +170,66 @@ fn an_rpt_without_the_severities_verb_falls_back_to_the_defaults_with_a_toast() 
 
     let s = screen(&mut app, report.path());
 
-    assert!(s.contains("severities"), "a toast names the missing verb: {s}");
+    assert!(s.contains("severities broke"), "a toast carries rpt's error: {s}");
     assert!(s.contains("1 high  1 medium  1 info"), "{s}");
+}
+
+/// The fixture with `remediation` renamed to Recommendation, its heading rewritten to match, and
+/// a custom required Risk section plus an unrequired Appendix section on F-003.
+fn renamed_sections_app() -> (App, tempfile::TempDir) {
+    let report = common::fixture();
+    std::fs::write(report.path().join("rpt.yaml"), common::RENAMED_SECTIONS_CONFIG).unwrap();
+    let f = report.path().join("findings/sqli-login.md");
+    let src = std::fs::read_to_string(&f).unwrap().replace("## Remediation", "## Recommendation")
+        + "\n## Risk\n\nAccount takeover.\n\n## Appendix\n\nSeen on both front-ends.\n";
+    std::fs::write(&f, src).unwrap();
+    let client = Client::new(common::rpt_bin(), report.path());
+    (App::new(client), report)
+}
+
+#[test]
+fn the_preview_titles_sections_with_the_report_s_own_headings() {
+    let (mut app, report) = renamed_sections_app();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // full view
+
+    let s = tall_screen(&mut app, report.path());
+
+    assert!(s.contains("## Recommendation"), "{s}");
+    assert!(!s.contains("## Remediation"), "{s}");
+}
+
+#[test]
+fn the_preview_orders_sections_as_rpt_lists_them_then_the_rest_by_name() {
+    let (mut app, report) = renamed_sections_app();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let s = tall_screen(&mut app, report.path());
+
+    let at = |h: &str| s.find(&format!("## {h}")).unwrap_or_else(|| panic!("no {h} in {s}"));
+    // Risk is listed by rpt (required), Appendix isn't: Risk comes first though it sorts later.
+    let order = ["Description", "Recommendation", "Proof of concept", "Risk", "Appendix"];
+    assert!(order.windows(2).all(|w| at(w[0]) < at(w[1])), "{s}");
+}
+
+#[test]
+fn when_rpt_sections_fails_the_preview_uses_default_headings_and_a_toast_says_why() {
+    let report = common::fixture();
+    // A stand-in rpt whose sections and severities verbs fail; every other verb goes to the real rpt.
+    let fake = common::stand_in_rpt(
+        report.path(),
+        "rpt-no-sections",
+        &format!(
+            "case \"$1\" in sections|severities) echo \"rpt: $1 broke\" >&2; exit 2;; esac\nexec {} \"$@\"\n",
+            common::rpt_bin().display()
+        ),
+    );
+    let mut app = App::new(Client::new(&fake, report.path()));
+
+    let home = tall_screen(&mut app, report.path());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let full = tall_screen(&mut app, report.path());
+
+    assert!(home.contains("sections broke"), "{home}");
+    assert!(!home.contains("older"), "no older-rpt hint: {home}");
+    assert!(full.contains("## Remediation"), "{full}");
 }

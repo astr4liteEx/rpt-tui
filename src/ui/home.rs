@@ -11,7 +11,7 @@ use ratatui::{
 use super::{App, Focus, Mark, form::Form, palette, plural, term::TermView, theme::Theme};
 use crate::config::ParamKind;
 use crate::keys::Action;
-use crate::rpt::{Finding, Problem};
+use crate::rpt::{Finding, Problem, Section};
 
 /// Draws the home screen; returns the inside of the right side, where a run's pane goes.
 pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
@@ -488,22 +488,16 @@ fn fit(text: &str, width: usize) -> String {
     out
 }
 
-/// Body sections in reading order: the usual three first, then any others by name.
-fn ordered_sections(x: &Finding) -> Vec<(&str, &str)> {
-    let known = ["description", "remediation", "poc"];
+/// Body sections in reading order, each with its title: the sections rpt lists, in its order
+/// and under this report's headings, then any others the finding has by name (a custom
+/// section's key is its heading).
+fn ordered_sections<'a>(x: &'a Finding, listed: &'a [Section]) -> Vec<(&'a str, &'a str)> {
     let mut out: Vec<(&str, &str)> =
-        known.iter().filter_map(|k| x.sections.get_key_value(*k)).map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    out.extend(x.sections.iter().filter(|(k, _)| !known.contains(&k.as_str())).map(|(k, v)| (k.as_str(), v.as_str())));
+        listed.iter().filter_map(|s| x.sections.get(&s.key).map(|body| (s.heading.as_str(), body.as_str()))).collect();
+    out.extend(
+        x.sections.iter().filter(|(k, _)| !listed.iter().any(|s| &s.key == *k)).map(|(k, v)| (k.as_str(), v.as_str())),
+    );
     out
-}
-
-fn section_title(key: &str) -> String {
-    match key {
-        "description" => "Description".into(),
-        "remediation" => "Remediation".into(),
-        "poc" => "Proof of concept".into(),
-        other => other.to_string(),
-    }
 }
 
 fn draw_finding_preview(f: &mut Frame, area: Rect, app: &App) {
@@ -525,10 +519,10 @@ fn draw_finding_preview(f: &mut Frame, area: Rect, app: &App) {
         Line::from(meta),
         Line::from(Span::styled(x.path.clone(), Style::new().fg(t.muted))),
     ];
-    for (key, body) in ordered_sections(x) {
+    for (title, body) in ordered_sections(x, &app.view.sections) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            format!("## {}", section_title(key)),
+            format!("## {title}"),
             Style::new().fg(t.accent).add_modifier(Modifier::BOLD),
         )));
         lines.extend(body.lines().map(|l| Line::from(Span::styled(l.to_string(), Style::new().fg(t.text)))));

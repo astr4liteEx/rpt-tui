@@ -50,6 +50,8 @@ pub struct ReportView {
     pub version: Option<Version>,
     /// Severity levels from `rpt severities`, most severe first.
     pub severities: Vec<String>,
+    /// The report's sections from `rpt sections`, in rpt's order.
+    pub sections: Vec<rpt::Section>,
     /// Messages for things that could not be read, shown as a toast.
     pub errors: Vec<String>,
 }
@@ -60,11 +62,10 @@ impl ReportView {
         let version = keep(client.version(), &mut errors);
         let findings = keep(client.findings(), &mut errors).unwrap_or_default();
         let problems = keep(client.problems(), &mut errors).unwrap_or_default();
-        let severities = client.severities().unwrap_or_else(|e| {
-            errors.push(format!("{e} (rpt older than the severities verb? update rpt); using the default levels"));
-            rpt::default_severities()
-        });
-        let mut view = ReportView { root: root.to_path_buf(), findings, problems, version, severities, errors };
+        let severities = keep_or(client.severities(), &mut errors, "levels", rpt::default_severities);
+        let sections = keep_or(client.sections(), &mut errors, "headings", rpt::default_sections);
+        let mut view =
+            ReportView { root: root.to_path_buf(), findings, problems, version, severities, sections, errors };
         view.sort_findings();
         view
     }
@@ -113,6 +114,14 @@ impl ReportView {
 /// The value, or `None` with the error's message pushed onto `errors`.
 fn keep<T>(r: Result<T, rpt::Error>, errors: &mut Vec<String>) -> Option<T> {
     r.map_err(|e| errors.push(e.to_string())).ok()
+}
+
+/// The result's value, or the defaults with the error noted ("…; using the default <what>").
+fn keep_or<T>(r: Result<T, rpt::Error>, errors: &mut Vec<String>, what: &str, default: fn() -> T) -> T {
+    r.unwrap_or_else(|e| {
+        errors.push(format!("{e}; using the default {what}"));
+        default()
+    })
 }
 
 /// The focused panel; keys can be scoped to panels too.
@@ -359,7 +368,7 @@ impl App {
         }
     }
 
-    /// Re-reads findings and problems (after a run), keeping the selection on the same items.
+    /// Re-reads the report through rpt (after a run), keeping the selection on the same items.
     fn refresh(&mut self) {
         let finding = self.selected_finding().map(|f| f.id.clone());
         let problem = self.selected_problem().map(|p| (p.path.clone(), p.line));
