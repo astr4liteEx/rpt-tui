@@ -1,0 +1,22 @@
+# Publishes a GitHub release for each v* tag. scripts/release.sh builds the
+# archives and SHA256SUMS; the release notes are the tag's annotation.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # checkout turns the pushed tag into a lightweight one; fetch the
+      # annotated tag so its message can become the release notes.
+      - run: git fetch --force origin "+${GITHUB_REF}:${GITHUB_REF}"
+      # rustup reads rust-toolchain.toml; release.sh needs both musl targets.
+      - run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+      - run: scripts/release.sh
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --notes-from-tag --title "rpt-tui $GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}
