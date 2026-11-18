@@ -4,7 +4,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The local time at `t`.
 fn local(t: SystemTime) -> Option<libc::tm> {
-    let secs = t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as libc::time_t;
+    // The C `time_t`, inferred from localtime_r (libc's alias is deprecated on musl); a time
+    // it can't hold has no local time.
+    let secs = t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()).try_into().ok()?;
     // SAFETY: localtime_r only writes the tm it is given.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     (!unsafe { libc::localtime_r(&secs, &mut tm) }.is_null()).then_some(tm)
