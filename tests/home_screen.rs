@@ -6,14 +6,13 @@ use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
 };
 use rpt_tui::rpt::Client;
-use rpt_tui::ui::{App, ReportView};
+use rpt_tui::ui::App;
 
 /// Loads the fixture report through the real rpt, the way the TUI does at start-up.
 fn fixture_app() -> (App, tempfile::TempDir) {
     let report = common::fixture();
     let client = Client::new(common::rpt_bin(), report.path());
-    let view = ReportView::load(&client, report.path());
-    (App::new(view), report)
+    (App::new(client), report)
 }
 
 /// Renders a frame and returns it as text, one line per row, with the temp report path masked.
@@ -93,7 +92,7 @@ fn an_unknown_schema_version_shows_a_banner() {
         ),
     );
     let client = Client::new(&fake, report.path());
-    let mut app = App::new(ReportView::load(&client, report.path()));
+    let mut app = App::new(client);
 
     let s = screen(&mut app, report.path());
 
@@ -105,7 +104,7 @@ fn a_broken_rpt_yaml_is_a_toast_not_a_crash() {
     let report = common::fixture();
     std::fs::write(report.path().join("rpt.yaml"), "format: 1\nseverities: [high, {oops\n").unwrap();
     let client = Client::new(common::rpt_bin(), report.path());
-    let mut app = App::new(ReportView::load(&client, report.path()));
+    let mut app = App::new(client);
 
     let s = screen(&mut app, report.path());
 
@@ -158,7 +157,7 @@ fn an_rpt_without_the_severities_verb_falls_back_to_the_defaults_with_a_toast() 
         ),
     );
     let client = Client::new(&fake, report.path());
-    let mut app = App::new(ReportView::load(&client, report.path()));
+    let mut app = App::new(client);
 
     let s = screen(&mut app, report.path());
 

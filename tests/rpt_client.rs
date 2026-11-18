@@ -107,3 +107,39 @@ fn severities_follow_a_report_s_custom_levels() {
 
     assert_eq!(client.severities().unwrap(), ["severe", "moderate", "minor"]);
 }
+
+#[test]
+fn plugins_are_listed_with_their_describe_answers() {
+    let report = common::fixture();
+    let dir = tempfile::tempdir().unwrap();
+    common::stand_in_rpt(
+        dir.path(),
+        "rpt-parse-nuclei",
+        r#"echo '{"summary":"Parse nuclei JSON Lines","usage":"rpt parse-nuclei < results.jsonl","version":"0.3.1","input":"jsonl/nuclei","output":"records"}'"#,
+    );
+    common::stand_in_rpt(dir.path(), "rpt-broken", "exit 3");
+    let client = Client::new(common::rpt_bin(), report.path()).with_path(dir.path().as_os_str());
+
+    let mut plugins = client.plugins().unwrap();
+    plugins.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let names: Vec<&str> = plugins.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["broken", "parse-nuclei"]);
+    let broken = &plugins[0];
+    assert_eq!(broken.summary, None, "a plugin whose --describe fails is still listed");
+    let nuclei = &plugins[1];
+    assert_eq!(nuclei.summary.as_deref(), Some("Parse nuclei JSON Lines"));
+    assert_eq!(nuclei.usage.as_deref(), Some("rpt parse-nuclei < results.jsonl"));
+    assert_eq!(nuclei.input.as_deref(), Some("jsonl/nuclei"));
+    assert_eq!(nuclei.output.as_deref(), Some("records"));
+}
+
+#[test]
+fn the_path_runs_get_puts_this_rpt_first() {
+    let report = common::fixture();
+    let client = Client::new(common::rpt_bin(), report.path()).with_path(std::ffi::OsStr::new("/usr/bin:/bin"));
+
+    let path = client.path();
+
+    assert_eq!(path.to_str().unwrap(), format!("{}:/usr/bin:/bin", common::rpt_dir().display()));
+}

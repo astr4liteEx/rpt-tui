@@ -1,6 +1,9 @@
 //! The terminal UI: app state, keys and the main loop. Drawing is in `home`.
 
+mod commands;
+pub mod edit;
 mod home;
+pub mod palette;
 mod runs;
 mod term;
 pub mod theme;
@@ -112,27 +115,76 @@ pub enum Focus {
 pub struct App {
     pub view: ReportView,
     pub focus: Focus,
+    /// Findings or Problems, whichever was focused last: where the selection is.
+    last_list: Focus,
     findings_sel: usize,
     problems_sel: usize,
     toast: Option<String>,
     theme: Theme,
     runs: Runs,
     quit: bool,
+    client: Client,
+    plugins: commands::Plugins,
+    palette: Option<palette::State>,
+    /// Commands used this session, most recent first (`plugin greet`).
+    recent: Vec<String>,
+    /// `$VISUAL` and `$EDITOR`, as rpt-tui was started with.
+    editor_env: (Option<String>, Option<String>),
 }
 
 impl App {
-    pub fn new(view: ReportView) -> App {
+    /// Reads the report through `client` and starts listing plugins in the background.
+    pub fn new(client: Client) -> App {
+        let view = ReportView::load(&client, client.report());
         let toast = (!view.errors.is_empty()).then(|| view.errors.join("; "));
         App {
             view,
             focus: Focus::Findings,
+            last_list: Focus::Findings,
             findings_sel: 0,
             problems_sel: 0,
             toast,
             theme: Theme::CHARM,
             runs: Runs::default(),
             quit: false,
+            plugins: commands::Plugins::load(&client),
+            client,
+            palette: None,
+            recent: vec![],
+            editor_env: (std::env::var("VISUAL").ok(), std::env::var("EDITOR").ok()),
         }
+    }
+
+    /// Re-reads findings and problems (after a run), keeping the selection on the same items.
+    fn refresh(&mut self) {
+        let finding = self.selected_finding().map(|f| f.id.clone());
+        let problem = self.selected_problem().map(|p| (p.path.clone(), p.line));
+        self.view = ReportView::load(&self.client, &self.view.root);
+        if !self.view.errors.is_empty() {
+            self.toast = Some(self.view.errors.join("; "));
+        }
+        let clamp = |i: usize, len: usize| i.min(len.saturating_sub(1));
+        self.findings_sel = finding
+            .and_then(|id| self.view.findings.iter().position(|f| f.id == id))
+            .unwrap_or(clamp(self.findings_sel, self.view.findings.len()));
+        self.problems_sel = problem
+            .and_then(|(path, line)| self.view.problems.iter().position(|p| p.path == path && p.line == line))
+            .unwrap_or(clamp(self.problems_sel, self.view.problems.len()));
+    }
+
+    fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+        if focus != Focus::Runs {
+            self.last_list = focus;
+        }
+    }
+
+    fn focus_next(&mut self) {
+        self.set_focus(match self.focus {
+            Focus::Findings => Focus::Problems,
+            Focus::Problems => Focus::Runs,
+            Focus::Runs => Focus::Findings,
+        })
     }
 
     pub fn should_quit(&self) -> bool {
@@ -151,6 +203,10 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         // Any key dismisses the toast; real toast timing comes with notifications.
         self.toast = None;
+        if self.palette.is_some() {
+            self.palette_key(key);
+            return;
+        }
         if self.run_key(key) {
             return;
         }
@@ -160,16 +216,16 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('c') if ctrl => self.quit = true,
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Findings => Focus::Problems,
-                    Focus::Problems => Focus::Runs,
-                    Focus::Runs => Focus::Findings,
-                }
+            KeyCode::Char(':') => self.open_palette(),
+            KeyCode::Char('p') if ctrl => self.open_palette(),
+            KeyCode::Char('e') if self.focus != Focus::Runs => self.edit(),
+            KeyCode::Char('v') => {
+                self.run_shell(palette::Entry::new(palette::Kind::Rpt, "validate", "").id(), "rpt validate")
             }
-            KeyCode::Char('1') => self.focus = Focus::Findings,
-            KeyCode::Char('2') => self.focus = Focus::Problems,
-            KeyCode::Char('3') => self.focus = Focus::Runs,
+            KeyCode::Tab => self.focus_next(),
+            KeyCode::Char('1') => self.set_focus(Focus::Findings),
+            KeyCode::Char('2') => self.set_focus(Focus::Problems),
+            KeyCode::Char('3') => self.set_focus(Focus::Runs),
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),
             KeyCode::Char('g') => self.move_to(0),
@@ -209,12 +265,6 @@ impl App {
     }
 }
 
-/// A run to start as soon as the TUI is up (`--dev-run`), until the palette can launch runs.
-pub struct DevRun {
-    pub command: String,
-    pub display: Display,
-}
-
 /// Modes a raw-takeover child may have left on the real terminal: mouse, bracketed paste,
 /// application cursor and keypad, cursor shape and visibility, SGR, focus events, kitty
 /// keyboard and synchronized output.
@@ -232,11 +282,10 @@ const LIVE_REDRAW: Duration = Duration::from_millis(500);
 const FRAME: Duration = Duration::from_millis(16);
 
 /// Runs the TUI until the user quits; returns the process exit code.
-pub fn run(report: &Path, rpt_bin: &Path, dev_run: Option<DevRun>) -> i32 {
-    let client = Client::new(rpt_bin, report);
-    let mut app = App::new(ReportView::load(&client, report));
+pub fn run(report: &Path, rpt_bin: &Path) -> i32 {
+    let mut app = App::new(Client::new(rpt_bin, report));
     let mut terminal = ratatui::init();
-    let result = main_loop(&mut terminal, &mut app, dev_run);
+    let result = main_loop(&mut terminal, &mut app);
     app.kill_all();
     let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
@@ -249,12 +298,9 @@ pub fn run(report: &Path, rpt_bin: &Path, dev_run: Option<DevRun>) -> i32 {
     }
 }
 
-fn main_loop(terminal: &mut DefaultTerminal, app: &mut App, dev_run: Option<DevRun>) -> std::io::Result<()> {
+fn main_loop(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     terminal.draw(|f| app.draw(f))?;
-    if let Some(d) = dev_run {
-        app.launch("dev-run", vec!["sh".into(), "-c".into(), d.command], d.display);
-    }
     let mut last_draw = Instant::now();
     let mut was_raw = false;
     while !app.should_quit() {

@@ -26,18 +26,11 @@ fn main() {
 
 fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // `--dev-run[-raw] <command>` is a hidden, temporary launcher until the palette exists.
-    let mut dev_run = None;
     match args.as_slice() {
         [] => {}
         [a] if a == "--describe" => {
             println!("{DESCRIBE}");
             return EXIT_OK;
-        }
-        [flag, command] if flag == "--dev-run" || flag == "--dev-run-raw" => {
-            let display =
-                if flag == "--dev-run" { ui::Display::Pane } else { ui::Display::Takeover(ui::TakeoverStyle::Raw) };
-            dev_run = Some(ui::DevRun { command: command.clone(), display });
         }
         _ => {
             eprintln!("usage: rpt-tui [--describe]   (run inside a report folder)");
@@ -51,7 +44,7 @@ fn run() -> i32 {
             return EXIT_USAGE;
         }
     };
-    ui::run(&startup.report, &startup.rpt, dev_run)
+    ui::run(&startup.report, &startup.rpt)
 }
 
 /// Finds the report root and the rpt binary, or says why not.

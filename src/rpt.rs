@@ -1,7 +1,7 @@
 //! Client for the rpt binary: runs its `--json` verbs in the report and parses the records.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -37,10 +37,12 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// Finds the `rpt` executable in a `PATH` value, skipping empty and relative entries
 /// as rpt's plugin lookup does.
 pub fn find_on_path(path: &OsStr) -> Option<PathBuf> {
-    std::env::split_paths(path)
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join("rpt"))
-        .find(|bin| is_executable(bin))
+    which(path, "rpt")
+}
+
+/// The first executable `name` in a `PATH` value, skipping empty and relative entries.
+pub fn which(path: &OsStr, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(path).filter(|dir| dir.is_absolute()).map(|dir| dir.join(name)).find(|bin| is_executable(bin))
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -125,15 +127,53 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// A `plugin` record from `rpt plugins`: the verb, and what its `--describe` said, if anything.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Plugin {
+    pub name: String,
+    pub path: PathBuf,
+    pub summary: Option<String>,
+    pub usage: Option<String>,
+    pub input: Option<String>,
+    pub output: Option<String>,
+}
+
 /// Runs rpt verbs in one report.
+#[derive(Debug, Clone)]
 pub struct Client {
     bin: PathBuf,
     report: PathBuf,
+    /// `PATH` for rpt and for runs: this rpt's folder first, then the base `PATH`.
+    path: OsString,
 }
 
 impl Client {
+    /// A client for `bin` in `report`, with the process's `PATH` as the base.
     pub fn new(bin: impl Into<PathBuf>, report: impl Into<PathBuf>) -> Self {
-        Client { bin: bin.into(), report: report.into() }
+        let base = std::env::var_os("PATH").unwrap_or_default();
+        Client { bin: bin.into(), report: report.into(), path: OsString::new() }.with_path(&base)
+    }
+
+    /// Replaces the base `PATH` (where rpt looks for plugins); this rpt's folder stays first.
+    pub fn with_path(mut self, base: &OsStr) -> Self {
+        let dir = self.bin.parent().map(Path::to_path_buf).unwrap_or_default();
+        let dirs = std::iter::once(dir).chain(std::env::split_paths(base));
+        self.path = std::env::join_paths(dirs).unwrap_or_else(|_| base.to_os_string());
+        self
+    }
+
+    /// The `PATH` rpt and runs get, so `rpt` in a run is this rpt.
+    pub fn path(&self) -> &OsStr {
+        &self.path
+    }
+
+    pub fn report(&self) -> &Path {
+        &self.report
+    }
+
+    /// `rpt plugins`: every plugin on `PATH`, in rpt's order.
+    pub fn plugins(&self) -> Result<Vec<Plugin>, Error> {
+        self.records("plugins", "plugin")
     }
 
     pub fn version(&self) -> Result<Version, Error> {
@@ -179,6 +219,7 @@ impl Client {
             .args(args)
             .current_dir(&self.report)
             .env("RPT_REPORT_DIR", &self.report)
+            .env("PATH", &self.path)
             .output()
             .map_err(Error::Spawn)?;
         match out.status.code() {

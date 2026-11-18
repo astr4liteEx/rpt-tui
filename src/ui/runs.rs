@@ -33,6 +33,8 @@ pub struct RunEntry {
     pub run: Run,
     /// The style used when this run is taken over.
     pub style: TakeoverStyle,
+    /// Removed from Runs when it ends, leaving no trace.
+    pub ephemeral: bool,
 }
 
 /// The Runs panel's state.
@@ -159,6 +161,17 @@ impl Runs {
         self.keys = true;
     }
 
+    /// Removes run `i`; the selection and takeover stay on the same runs. Removing the
+    /// taken-over run ends takeover; removing the selected one selects the run before it.
+    pub fn remove(&mut self, i: usize) -> RunEntry {
+        let e = self.entries.remove(i);
+        let shift = |j: usize| if j > i { j - 1 } else { j };
+        self.takeover = self.takeover.filter(|&t| t != i).map(shift);
+        self.sel = if self.sel == i { i.saturating_sub(1) } else { shift(self.sel) };
+        self.sel = self.sel.min(self.entries.len().saturating_sub(1));
+        e
+    }
+
     /// Back to the pane; keys stay with the run while it lives.
     pub fn leave_takeover(&mut self) {
         let Some(i) = self.takeover.take() else { return };
@@ -171,10 +184,12 @@ impl Runs {
 }
 
 impl App {
-    /// Starts `argv` in the report as a new run, selected, with the keys.
-    pub fn launch(&mut self, label: &str, argv: Vec<String>, display: Display) {
+    /// Starts `argv` in the report as a new run, selected, with the keys; returns its index.
+    /// `rpt` on the run's `PATH` is the rpt this TUI uses.
+    pub fn launch(&mut self, label: &str, argv: Vec<String>, display: Display) -> Option<usize> {
         let mut launch = Launch::new(argv, &self.view.root);
         launch.env.push(("RPT_REPORT_DIR".into(), self.view.root.display().to_string()));
+        launch.env.push(("PATH".into(), self.client.path().to_string_lossy().into_owned()));
         let defaults = Colors::default();
         launch.colors = Colors { fg: rgb(self.theme.text, defaults.fg), bg: rgb(self.theme.bg, defaults.bg) };
         let style = match display {
@@ -183,7 +198,7 @@ impl App {
         };
         match Run::spawn(launch, self.runs.pane_size(), self.runs.dirty.clone()) {
             Ok(run) => {
-                self.runs.entries.push(RunEntry { label: label.to_string(), run, style });
+                self.runs.entries.push(RunEntry { label: label.to_string(), run, style, ephemeral: false });
                 let i = self.runs.entries.len() - 1;
                 self.runs.sel = i;
                 self.runs.keys = true;
@@ -191,13 +206,33 @@ impl App {
                 if matches!(display, Display::Takeover(_)) {
                     self.runs.enter_takeover(i);
                 }
+                Some(i)
             }
-            Err(e) => self.toast = Some(format!("could not start {label}: {e}")),
+            Err(e) => {
+                self.toast = Some(format!("could not start {label}: {e}"));
+                None
+            }
         }
     }
 
-    /// Updates run statuses and sizes; call after each draw. True when a status changed.
+    /// Updates run statuses and sizes, takes in the plugin list, and re-reads the report
+    /// when a run ends; call after each draw. True when something to draw changed.
     pub fn tick(&mut self) -> bool {
+        let plugins = self.poll_plugins();
+        let ended = self.tick_runs();
+        if ended {
+            self.refresh();
+        }
+        // After the refresh, so an ephemeral run's failure toast isn't replaced by it.
+        self.drop_ended_ephemeral();
+        if self.runs.keys && self.runs.selected_live().is_none() {
+            self.runs.keys = false;
+        }
+        plugins || ended
+    }
+
+    /// Polls and sizes the runs; true when one ended.
+    fn tick_runs(&mut self) -> bool {
         let pane = self.runs.pane_size();
         let takeover = self.runs.takeover;
         let mut changed = false;
@@ -219,10 +254,17 @@ impl App {
         {
             self.runs.leave_takeover();
         }
-        if self.runs.keys && self.runs.selected_live().is_none() {
-            self.runs.keys = false;
-        }
         changed
+    }
+
+    /// Ended ephemeral runs leave Runs; a failure leaves a toast with its code.
+    fn drop_ended_ephemeral(&mut self) {
+        while let Some(i) = self.runs.entries.iter().position(|e| e.ephemeral && e.run.status() != Status::Live) {
+            let e = self.runs.remove(i);
+            if let Mark::Failed(why) = Mark::of(&e.run) {
+                self.toast = Some(format!("{} failed: {why}", e.label));
+            }
+        }
     }
 
     /// Keys while a run has them: `ctrl-g` takes them back, `ctrl-t` switches pane and takeover,
@@ -258,15 +300,21 @@ impl App {
             KeyCode::Char('g') => self.runs.sel = 0,
             KeyCode::Char('G') => self.runs.sel = len.saturating_sub(1),
             KeyCode::Enter => self.runs.keys = self.runs.selected_live().is_some(),
-            KeyCode::Char('f') => self.runs.enter_takeover(self.runs.sel),
-            KeyCode::Char('x') => {
-                if let Some(e) = self.runs.entries.get_mut(self.runs.sel) {
-                    e.run.kill();
-                }
-            }
+            KeyCode::Char('f') => self.take_over_selected(),
+            KeyCode::Char('x') => self.kill_selected(),
             _ => return false,
         }
         true
+    }
+
+    pub(super) fn take_over_selected(&mut self) {
+        self.runs.enter_takeover(self.runs.sel);
+    }
+
+    pub(super) fn kill_selected(&mut self) {
+        if let Some(e) = self.runs.entries.get_mut(self.runs.sel) {
+            e.run.kill();
+        }
     }
 
     /// A mouse event: forwarded to the run that has the keys, relative to where it is drawn.
@@ -305,5 +353,48 @@ impl App {
 
     pub fn any_live(&self) -> bool {
         self.runs.entries.iter().any(|e| e.run.status() == Status::Live)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(label: &str) -> RunEntry {
+        let launch = Launch::new(vec!["true".into()], &std::env::temp_dir());
+        let run = Run::spawn(launch, Size { rows: 5, cols: 20 }, Arc::new(AtomicBool::new(false))).unwrap();
+        RunEntry { label: label.into(), run, style: TakeoverStyle::Emulated, ephemeral: false }
+    }
+
+    fn runs(labels: &[&str]) -> Runs {
+        Runs { entries: labels.iter().map(|l| entry(l)).collect(), ..Runs::default() }
+    }
+
+    fn label(runs: &Runs, i: Option<usize>) -> Option<&str> {
+        i.and_then(|i| runs.entries.get(i)).map(|e| e.label.as_str())
+    }
+
+    #[test]
+    fn removing_a_run_keeps_the_selection_and_takeover_on_the_same_runs() {
+        let mut r = runs(&["a", "b", "c"]);
+        r.sel = 2;
+        r.takeover = Some(1);
+
+        r.remove(0);
+
+        assert_eq!(label(&r, Some(r.sel)), Some("c"));
+        assert_eq!(label(&r, r.takeover), Some("b"));
+    }
+
+    #[test]
+    fn removing_the_selected_or_taken_over_run_moves_the_selection_and_ends_takeover() {
+        let mut r = runs(&["a", "b"]);
+        r.sel = 1;
+        r.takeover = Some(1);
+
+        r.remove(1);
+
+        assert_eq!(label(&r, Some(r.sel)), Some("a"));
+        assert_eq!(r.takeover, None);
     }
 }

@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 
-use super::{App, Focus, Mark, term::TermView, theme::Theme};
+use super::{App, Focus, Mark, palette, term::TermView, theme::Theme};
 use crate::rpt::{Finding, Problem};
 
 /// Draws the home screen; returns the inside of the right side, where a run's pane goes.
@@ -40,12 +40,17 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
         " keys go to the run · ctrl-g leave · ctrl-t takeover"
     } else {
         match app.focus {
-            Focus::Findings | Focus::Problems => " j/k move · g/G top/bottom · tab/1-3 focus · q quit",
-            Focus::Runs => " enter keys · f takeover · x kill · j/k move · tab/1-3 focus · q quit",
+            Focus::Findings | Focus::Problems => {
+                " : commands · e edit · v validate · j/k move · tab/1-3 focus · q quit"
+            }
+            Focus::Runs => " : commands · enter keys · f takeover · x kill · j/k move · tab/1-3 focus · q quit",
         }
     };
     f.render_widget(Line::from(Span::styled(hints, Style::new().fg(t.muted))), footer);
 
+    if let Some(state) = &app.palette {
+        draw_palette(f, app, state);
+    }
     if let Some(msg) = &app.toast {
         draw_toast(f, &t, msg);
     }
@@ -235,7 +240,11 @@ fn draw_runs(f: &mut Frame, area: Rect, app: &App) {
             let colour = mark.colour(&t);
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:<12}", mark.text()), Style::new().fg(colour)),
-                Span::styled(e.label.clone(), Style::new().fg(t.text)),
+                if e.ephemeral {
+                    Span::styled(e.label.clone(), Style::new().fg(t.muted).add_modifier(Modifier::ITALIC))
+                } else {
+                    Span::styled(e.label.clone(), Style::new().fg(t.text))
+                },
             ]))
         })
         .collect();
@@ -332,4 +341,104 @@ fn draw_toast(f: &mut Frame, t: &Theme, msg: &str) {
         .border_style(Style::new().fg(t.err))
         .style(Style::new().bg(t.surface));
     f.render_widget(Paragraph::new(msg.to_string()).block(block), rect);
+}
+
+/// A rectangle `width` × `height` centred in `area`, shrunk to fit.
+fn centred(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width.saturating_sub(4));
+    let height = height.min(area.height.saturating_sub(2));
+    Rect { x: area.x + (area.width - width) / 2, y: area.y + (area.height - height) / 2, width, height }
+}
+
+/// The command palette: a query line over the ranked list, or a chosen entry's argument line.
+fn draw_palette(f: &mut Frame, app: &App, state: &palette::State) {
+    let t = app.theme;
+    let block = |title: String| {
+        Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(t.border_focus))
+            .title(Line::from(Span::styled(title, Style::new().fg(t.accent).add_modifier(Modifier::BOLD))))
+            .style(Style::new().bg(t.surface).fg(t.text))
+            .padding(Padding::horizontal(1))
+    };
+    if let Some(args) = &state.args {
+        let rect = centred(f.area(), 84, 6);
+        f.render_widget(Clear, rect);
+        let b = block(format!(" {} {} ", args.entry.kind.tag(), args.entry.name));
+        let inner = b.inner(rect);
+        f.render_widget(b, rect);
+        let prompt = format!("rpt {} ", args.entry.name);
+        let hint = args.hint.as_ref().map(|h| format!("usage: {h}")).unwrap_or_default();
+        let lines = vec![
+            Line::from(Span::styled(hint, Style::new().fg(t.muted))),
+            Line::from(vec![
+                Span::styled(prompt.clone(), Style::new().fg(t.accent)),
+                Span::styled(args.text.clone(), Style::new().fg(t.text)),
+            ]),
+            Line::from(Span::styled("enter run · ctrl-u clear · esc back", Style::new().fg(t.muted))),
+        ];
+        f.render_widget(Paragraph::new(lines), inner);
+        let x = inner.x + (prompt.chars().count() + args.text.chars().count()) as u16;
+        f.set_cursor_position((x.min(inner.right().saturating_sub(1)), inner.y + 1));
+        return;
+    }
+
+    let entries = app.entries();
+    let rows = app.palette_rows(&entries);
+    let selected = app.palette_selected(&rows);
+    let rect = centred(f.area(), 84, rows.len() as u16 + 4);
+    f.render_widget(Clear, rect);
+    let b = block(" commands ".into());
+    let inner = b.inner(rect);
+    f.render_widget(b, rect);
+    let [query, list] = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(inner);
+    f.render_widget(
+        Line::from(vec![
+            Span::styled("> ", Style::new().fg(t.accent)),
+            Span::styled(state.query.clone(), Style::new().fg(t.text)),
+        ]),
+        query,
+    );
+    f.set_cursor_position((query.x + 2 + state.query.chars().count() as u16, query.y));
+
+    let width = list.width as usize;
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| match row {
+            palette::Row::Header(h) => {
+                ListItem::new(Span::styled(h.to_string(), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)))
+            }
+            palette::Row::Loading => ListItem::new(Span::styled("  loading plugins…", Style::new().fg(t.muted))),
+            palette::Row::Entry(i) => ListItem::new(entry_line(&t, &entries[*i], width)),
+        })
+        .collect();
+    let at = selected.and_then(|s| rows.iter().position(|r| *r == palette::Row::Entry(s)));
+    let list_widget = List::new(items).highlight_style(Style::new().bg(t.bg)).highlight_symbol("▌");
+    let mut list_state = ListState::default().with_selected(at);
+    f.render_stateful_widget(list_widget, list, &mut list_state);
+}
+
+/// One palette row: kind tag, name, summary (or why it's greyed out), `input → output`, and
+/// its key on the right.
+fn entry_line<'a>(t: &Theme, e: &palette::Entry, width: usize) -> Line<'a> {
+    let dim = e.disabled.is_some();
+    let fg = |c| Style::new().fg(if dim { t.muted } else { c });
+    let key = e.key.clone().unwrap_or_default();
+    let io = e.io.as_ref().map(|io| format!("  {io}")).unwrap_or_default();
+    let summary = match &e.disabled {
+        Some(why) => format!("{} ({why})", e.summary),
+        None => e.summary.clone(),
+    };
+    let head = format!(" {:<7}{:<18} ", e.kind.tag(), truncate(&e.name, 18));
+    // Room for the summary once the tag, name, io and key are placed (and the highlight mark).
+    let room = width.saturating_sub(1 + head.chars().count() + io.chars().count() + key.chars().count() + 1);
+    let summary = truncate(&summary, room);
+    let pad = room.saturating_sub(summary.chars().count());
+    Line::from(vec![
+        Span::styled(head, fg(t.text)),
+        Span::styled(summary, fg(t.muted)),
+        Span::styled(io, fg(t.accent)),
+        Span::raw(" ".repeat(pad + 1)),
+        Span::styled(key, fg(t.warn)),
+    ])
 }

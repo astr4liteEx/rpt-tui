@@ -9,13 +9,12 @@ use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
 };
 use rpt_tui::rpt::Client;
-use rpt_tui::ui::{App, Display, ReportView};
+use rpt_tui::ui::{App, Display};
 
 fn fixture_app() -> (App, tempfile::TempDir) {
     let report = common::fixture();
     let client = Client::new(common::rpt_bin(), report.path());
-    let view = ReportView::load(&client, report.path());
-    (App::new(view), report)
+    (App::new(client), report)
 }
 
 struct Screen {
