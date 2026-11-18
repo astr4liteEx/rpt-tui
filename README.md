@@ -176,4 +176,4 @@ docs/demo/setup.sh && vhs docs/demo/screen.tape   # re-record a README GIF (need
 > [!NOTE]
 > The tests build rpt from source: clone [rpt](https://github.com/astr4liteEx/rpt) next to this repo (as `../rpt`) and install Go. `scripts/release.sh` also needs the `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` targets (`rustup target add …`).
 
-The project's vocabulary is in [GLOSSARY.md](GLOSSARY.md), and design decisions are recorded in [docs/adr/](docs/adr/).
+The project's vocabulary is in [GLOSSARY.md](GLOSSARY.md).
