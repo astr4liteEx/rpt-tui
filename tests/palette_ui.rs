@@ -241,12 +241,13 @@ fn rpt_rows_come_from_rpt_verbs_with_rpt_s_own_summary() {
 }
 
 #[test]
-fn add_new_plugins_and_verbs_are_not_offered_as_rpt_rows() {
+fn add_new_ls_plugins_and_verbs_are_not_offered_as_rpt_rows() {
     let mut fx = fixture();
     fx.until("Say hello"); // plugins listed, so the palette is complete
     for (verb, summary) in [
         ("add", "Add finding records as new finding files"),
         ("new", "Create an empty report"),
+        ("ls", "List the reports at or under a folder"),
         ("plugins", "List the plugins on PATH"),
         ("verbs", "List rpt's built-in verbs"),
     ] {

@@ -57,6 +57,15 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
+/// A fresh folder holding a copy of rpt's fixture report under each of `names`.
+pub fn reports_under(names: &[&str]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    for name in names {
+        copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE), &dir.path().join(name));
+    }
+    dir
+}
+
 /// Writes an executable shell script standing in for rpt into `dir` and returns its path.
 pub fn stand_in_rpt(dir: &Path, name: &str, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;

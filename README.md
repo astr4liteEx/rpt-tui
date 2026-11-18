@@ -71,7 +71,7 @@ From inside a report folder (one holding `rpt.yaml`, or anywhere below it):
 rpt tui
 ```
 
-rpt finds `rpt-tui` on your `PATH` as a plugin; running `rpt-tui` directly works too. The report is `$RPT_REPORT_DIR` when set, else the nearest folder at or above the current one with `rpt.yaml`. Outside a report, or without rpt on `PATH`, it says so and exits with code 2. To start a report, run `rpt new <dir>`.
+rpt finds `rpt-tui` on your `PATH` as a plugin; running `rpt-tui` directly works too. The report is `$RPT_REPORT_DIR` when set, else the nearest folder at or above the current one with `rpt.yaml`. Outside a report, or without rpt on `PATH`, it says so and exits with code 2. Started in a folder that holds reports, it lists them (via `rpt ls`) with their full paths, ready to `cd` into or put in `RPT_REPORT_DIR`. To start a report, run `rpt new <dir>`.
 
 ### The screen
 
@@ -79,7 +79,7 @@ rpt finds `rpt-tui` on your `PATH` as a plugin; running `rpt-tui` directly works
 
 ### Running things
 
-Press `:` or `ctrl-p` for the **command palette**. It lists your chains, rpt's plugins, rpt's built-in verbs as `rpt verbs` lists them (all but `add`, `new`, `plugins` and `verbs`) and rpt-tui's own actions.
+Press `:` or `ctrl-p` for the **command palette**. It lists your chains, rpt's plugins, rpt's built-in verbs as `rpt verbs` lists them (all but `add`, `new`, `ls`, `plugins` and `verbs`) and rpt-tui's own actions.
 
 ![Running rpt validate, rpt set and a chain from the command palette](docs/demo/palette.gif)
 

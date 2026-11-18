@@ -14,9 +14,9 @@ use crate::keys::Action;
 use crate::rpt::{self, Client, Plugin};
 
 /// rpt's built-in verbs the palette leaves out: `add` reads stdin, so it is for chains (as is
-/// `scope match`); `new` can't make a report inside one, where the TUI always is; `plugins` and
-/// `verbs` the palette lists itself.
-const UNOFFERED_VERBS: [&str; 4] = ["add", "new", "plugins", "verbs"];
+/// `scope match`); `new` can't make a report inside one, where the TUI always is; `ls` lists other
+/// reports, and the TUI is about the one it's in; `plugins` and `verbs` the palette lists itself.
+const UNOFFERED_VERBS: [&str; 5] = ["add", "new", "ls", "plugins", "verbs"];
 
 /// A verb takes an argument line when its usage, after `rpt <verb>`, starts with a `<…>`
 /// placeholder, as `rpt set <id> <key> <value>` does.

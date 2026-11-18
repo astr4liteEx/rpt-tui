@@ -180,3 +180,28 @@ fn verbs_lists_rpt_s_built_ins_with_their_summary_and_usage() {
     assert_eq!(set.summary, "Change one frontmatter value of a finding");
     assert_eq!(set.usage, "rpt set <id> <key> <value>");
 }
+
+#[test]
+fn list_reports_finds_the_reports_under_a_folder_even_one_whose_config_is_broken() {
+    let dir = common::reports_under(&["good", "broken"]);
+    std::fs::write(dir.path().join("broken/rpt.yaml"), "format: [\n").unwrap();
+
+    let found = rpt_tui::rpt::list_reports(&common::rpt_bin(), dir.path(), std::time::Duration::from_secs(5)).unwrap();
+
+    let got: Vec<(String, Option<u32>)> =
+        found.iter().map(|l| (l.path.file_name().unwrap().to_string_lossy().into_owned(), l.findings)).collect();
+    assert_eq!(got, [("broken".to_string(), None), ("good".to_string(), Some(3))]);
+    assert!(found.iter().all(|l| l.path.is_absolute()));
+}
+
+#[test]
+fn list_reports_gives_up_on_an_rpt_that_takes_too_long() {
+    let dir = tempfile::tempdir().unwrap();
+    let slow = common::stand_in_rpt(dir.path(), "slow-rpt", "sleep 5\n");
+    let t0 = std::time::Instant::now();
+
+    let res = rpt_tui::rpt::list_reports(&slow, dir.path(), std::time::Duration::from_millis(200));
+
+    assert!(res.is_err());
+    assert!(t0.elapsed() < std::time::Duration::from_secs(2), "took {:?}", t0.elapsed());
+}
