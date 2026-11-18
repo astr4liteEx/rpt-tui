@@ -3,17 +3,18 @@
 mod chains;
 mod commands;
 pub mod edit;
+mod feedback;
 pub mod form;
 mod guide;
 mod history;
 mod home;
 pub mod palette;
 pub mod picker;
+mod reload;
 mod runs;
 mod term;
 pub mod theme;
 mod theme_picker;
-mod time;
 
 use runs::Runs;
 pub use runs::{Display, Mark, QUIET_AFTER, TakeoverStyle};
@@ -29,8 +30,8 @@ use ratatui::{
     crossterm::{
         self,
         event::{
-            self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-            KeyEvent, KeyEventKind,
+            self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+            EnableFocusChange, EnableMouseCapture, Event, KeyEvent, KeyEventKind,
         },
         execute,
     },
@@ -125,6 +126,22 @@ pub struct App {
     findings_sel: usize,
     problems_sel: usize,
     toast: Option<String>,
+    /// The error toast, and when it came up, to stack it among run toasts.
+    toast_since: Option<(String, Instant)>,
+    /// Toasts for runs that ended, oldest first; each goes when its time is up.
+    run_toasts: Vec<feedback::RunToast>,
+    /// How far the app's clock is ahead of the real one: tests move it on.
+    clock_ahead: std::time::Duration,
+    /// The terminal has focus (focus events say when it loses it).
+    focused: bool,
+    /// Bytes for the terminal itself (notifications, the bell), sent after the next draw.
+    to_terminal: Vec<u8>,
+    /// `notify:`.
+    notify: crate::config::NotifySettings,
+    /// What the terminal is, for the notification's escape.
+    terminal: crate::notify::Terminal,
+    /// `notify.command`s still running; each says why it failed, if it did.
+    notify_jobs: Vec<std::thread::JoinHandle<Option<String>>>,
     theme: Theme,
     /// `theme:` as written, which the picker previews and rewrites.
     theme_setting: Option<serde_json::Value>,
@@ -132,6 +149,8 @@ pub struct App {
     truecolor: bool,
     /// The theme picker, when open.
     theme_picker: Option<theme_picker::ThemePicker>,
+    /// The config files as last read, to reload when one changes.
+    config_files: reload::ConfigFiles,
     runs: Runs,
     quit: bool,
     client: Client,
@@ -235,6 +254,8 @@ impl App {
         errors.extend(theme_errors);
         let root = std::path::absolute(client.report()).unwrap_or_else(|_| client.report().to_path_buf());
         let limits = config.history.limits;
+        // As the file wrote it: `ui::run` fills in the default folder.
+        let history_written = config_path.as_deref().map(|p| crate::config::load_file(p).history).unwrap_or_default();
         let history = config.history.dir.as_deref().and_then(|dir| {
             crate::history::Store::open(dir, &root, limits)
                 .map_err(|e| errors.push(format!("run history is off: can't use {}: {e}", dir.display())))
@@ -249,6 +270,14 @@ impl App {
             findings_sel: 0,
             problems_sel: 0,
             toast,
+            toast_since: None,
+            run_toasts: vec![],
+            clock_ahead: std::time::Duration::ZERO,
+            focused: true,
+            to_terminal: vec![],
+            notify: config.notify.clone(),
+            terminal: crate::notify::Terminal::plain(),
+            notify_jobs: vec![],
             theme,
             theme_setting: config.theme,
             truecolor,
@@ -278,7 +307,9 @@ impl App {
             history,
             history_limits: limits,
             replay: Default::default(),
+            config_files: Default::default(),
         };
+        app.note_config_files(Some(history_written));
         app.load_history();
         app.open_guide();
         app
@@ -384,7 +415,7 @@ impl App {
             std::fs::write(&path, new)
         });
         match written {
-            Some(Ok(())) => {}
+            Some(Ok(())) => self.note_own_write(&path),
             Some(Err(e)) => self.toast = Some(format!("could not save config.yaml ({e}); to keep this, {by_hand}")),
             None => {
                 self.toast =
@@ -458,7 +489,7 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
-        // Any key dismisses the toast; real toast timing comes with notifications.
+        // Any key dismisses the toast; run toasts go by time.
         self.toast = None;
         if self.guide.is_some() {
             self.guide_key(key);
@@ -565,10 +596,11 @@ pub fn run(report: &Path, rpt_bin: &Path) -> i32 {
     }
     let truecolor = std::env::var("COLORTERM").is_ok_and(|c| matches!(c.as_str(), "truecolor" | "24bit"));
     let mut app = App::open(client, config, config_path, truecolor);
+    app.terminal = crate::notify::Terminal::from_env();
     let mut terminal = ratatui::init();
     let result = main_loop(&mut terminal, &mut app);
     app.kill_all();
-    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste, DisableFocusChange);
     ratatui::restore();
     match result {
         Ok(()) => 0,
@@ -580,13 +612,19 @@ pub fn run(report: &Path, rpt_bin: &Path) -> i32 {
 }
 
 fn main_loop(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<()> {
-    execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste, EnableFocusChange)?;
     terminal.draw(|f| app.draw(f))?;
     let mut last_draw = Instant::now();
     let mut was_raw = false;
     while !app.should_quit() {
         if app.tick() || (app.any_live() && last_draw.elapsed() >= LIVE_REDRAW) {
             app.runs.dirty.store(true, Ordering::Release);
+        }
+        let for_terminal = app.take_terminal_output();
+        if !for_terminal.is_empty() {
+            let mut out = std::io::stdout();
+            out.write_all(&for_terminal)?;
+            out.flush()?;
         }
         if app.runs.raw_takeover().is_some() {
             if !was_raw {
@@ -611,6 +649,8 @@ fn main_loop(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<(
                 Event::Key(k) if k.kind == KeyEventKind::Press => app.handle_key(k),
                 Event::Mouse(m) => app.handle_mouse(m),
                 Event::Paste(text) => app.handle_paste(&text),
+                Event::FocusGained => app.handle_focus(true),
+                Event::FocusLost => app.handle_focus(false),
                 _ => {}
             }
             app.runs.dirty.store(true, Ordering::Release);
@@ -625,6 +665,7 @@ fn main_loop(terminal: &mut DefaultTerminal, app: &mut App) -> std::io::Result<(
 /// Hands the real terminal to the taken-over run: our mouse and paste modes off, then the
 /// run's screen and modes repainted, then its output tee'd straight through.
 fn enter_raw(app: &mut App) -> std::io::Result<()> {
+    // Focus reports stay on: raw_step keeps them unless the run asked for its own.
     execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste)?;
     let full = app.runs.full;
     if let Some(run) = app.runs.raw_takeover() {
@@ -656,15 +697,19 @@ fn raw_step(app: &mut App) -> std::io::Result<()> {
     if n <= 0 {
         return Ok(());
     }
-    let data = &buf[..n as usize];
     let toggle = app.bindings.toggle_bytes();
     let Some(run) = app.runs.raw_takeover() else { return Ok(()) };
+    let (kept, focus) = crate::run::take_focus_reports(&buf[..n as usize]);
+    let data = if run.wants_focus_reports() { &buf[..n as usize] } else { &kept[..] };
     // Every byte goes to the run except `toggle_takeover`'s, which leave takeover (the run
     // keeps the keys).
     let toggled = data.iter().any(|b| toggle.contains(b));
     run.send(data.iter().copied().filter(|b| !toggle.contains(b)).collect::<Vec<u8>>());
     if toggled {
         app.runs.leave_takeover();
+    }
+    if let Some(focused) = focus {
+        app.handle_focus(focused);
     }
     Ok(())
 }
@@ -674,7 +719,7 @@ fn leave_raw(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
     let mut out = std::io::stdout();
     out.write_all(RESET_CHILD_MODES)?;
     out.flush()?;
-    execute!(out, EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(out, EnableMouseCapture, EnableBracketedPaste, EnableFocusChange)?;
     // Not `terminal.clear()`: it asks the terminal for the cursor position, and fails when
     // nothing answers. A full-screen resize clears and forces a full redraw without asking.
     let (cols, rows) = crossterm::terminal::size()?;

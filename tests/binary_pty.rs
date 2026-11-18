@@ -268,8 +268,8 @@ fn an_editor_failing_leaves_a_toast_with_its_code_and_no_run() {
 
     tui.send(b"e");
 
-    let s = until(&mut tui, "failed: 3");
-    assert!(s.contains("edit findings/sqli-login.md failed: 3"), "{s}");
+    let s = until(&mut tui, "(exit 3)");
+    assert!(s.contains("✘ edit findings/sqli-login.md failed (exit 3)"), "{s}");
     assert!(s.contains("No runs yet."), "{s}");
     quit(&mut tui);
     assert_eq!(wait_end(&mut tui), Status::Exited(0));

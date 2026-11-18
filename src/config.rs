@@ -10,9 +10,6 @@ use serde_json::{Map, Value};
 pub const RPT_VERBS: [&str; 10] =
     ["add", "assemble", "delete", "findings", "plugins", "scope", "set", "severities", "validate", "version"];
 
-/// Top-level keys read by later parts of the TUI; accepted here without a complaint.
-const LATER_KEYS: [&str; 1] = ["notify"];
-
 const CHAIN_KEYS: [&str; 9] =
     ["description", "key", "params", "needs", "ephemeral", "display", "takeover", "notify", "steps"];
 
@@ -132,6 +129,8 @@ pub struct Config {
     pub history: HistorySettings,
     /// `theme:` as written (a name or a map); checked when the theme is resolved.
     pub theme: Option<Value>,
+    /// `notify:`.
+    pub notify: NotifySettings,
     /// One message per problem, for the startup toast.
     pub errors: Vec<String>,
 }
@@ -210,7 +209,7 @@ pub fn load(text: &str) -> Config {
             "keys" => load_keys(value, &mut config),
             "history" => load_history(value, &mut config),
             "theme" => config.theme = Some(value.clone()).filter(|v| !v.is_null()),
-            k if LATER_KEYS.contains(&k) => {}
+            "notify" => load_notify(value, &mut config),
             k => config.errors.push(format!("config.yaml: unknown key `{k}`")),
         }
     }
@@ -238,6 +237,53 @@ fn load_history(value: &Value, config: &mut Config) {
         };
         if let Err(why) = ok {
             config.errors.push(format!("config.yaml: history: {key}: {why}"));
+        }
+    }
+}
+
+/// `notify:`: how a run's end is told when nobody watched it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotifySettings {
+    /// A desktop notification (OSC 9 or 777).
+    pub desktop: bool,
+    /// The terminal bell.
+    pub bell: bool,
+    /// Only runs at least this long notify.
+    pub after_secs: u64,
+    /// Run through `bash -c` in place of the desktop notification.
+    pub command: Option<String>,
+}
+
+impl Default for NotifySettings {
+    fn default() -> NotifySettings {
+        NotifySettings { desktop: true, bell: false, after_secs: 30, command: None }
+    }
+}
+
+/// `notify:` into `config.notify`; a bad value keeps its default and is an error.
+fn load_notify(value: &Value, config: &mut Config) {
+    let m = match value {
+        Value::Object(m) => m,
+        Value::Null => return,
+        _ => return config.errors.push("config.yaml: notify: not a map of settings".into()),
+    };
+    let n = &mut config.notify;
+    for (key, v) in m {
+        let ok = match key.as_str() {
+            "desktop" => v.as_bool().map(|b| n.desktop = b).ok_or("not true or false"),
+            "bell" => v.as_bool().map(|b| n.bell = b).ok_or("not true or false"),
+            "after_secs" => v.as_u64().map(|s| n.after_secs = s).ok_or("not a whole number of seconds"),
+            "command" => match v {
+                Value::Null | Value::String(_) => {
+                    n.command = v.as_str().map(String::from);
+                    Ok(())
+                }
+                _ => Err("not a command"),
+            },
+            _ => Err("unknown key"),
+        };
+        if let Err(why) = ok {
+            config.errors.push(format!("config.yaml: notify: {key}: {why}"));
         }
     }
 }

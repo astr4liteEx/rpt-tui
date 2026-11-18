@@ -17,19 +17,19 @@ impl App {
         env: Vec<(String, String)>,
         display: Display,
         ephemeral: bool,
-    ) {
+    ) -> Option<usize> {
         self.used(invocation.command.clone());
         let scratch = match Scratch::new() {
             Ok(s) => s,
             Err(e) => {
                 self.toast = Some(format!("could not start {label}: no scratch folder: {e}"));
-                return;
+                return None;
             }
         };
         let launch = steps_launch(steps, env, &self.view.root, &scratch);
-        if let Some(i) = self.start(label, launch, display, Some(scratch), Some(invocation)) {
-            self.runs.entries[i].ephemeral = ephemeral;
-        }
+        let i = self.start(label, launch, display, Some(scratch), Some(invocation))?;
+        self.runs.entries[i].ephemeral = ephemeral;
+        Some(i)
     }
 
     /// Runs a chain with its form's values (none for a chain without parameters).
@@ -48,8 +48,10 @@ impl App {
                 store.remember(&chain.name, &kept);
             }
         }
-        let steps = chain.steps.clone();
-        self.start_steps(invocation, &form.label(), &steps, form.env(), display, chain.ephemeral);
+        let (steps, notify) = (chain.steps.clone(), chain.notify);
+        if let Some(i) = self.start_steps(invocation, &form.label(), &steps, form.env(), display, chain.ephemeral) {
+            self.runs.entries[i].notify = notify;
+        }
     }
 
     /// Opens the chain's form, or runs it at once when it has no parameters.

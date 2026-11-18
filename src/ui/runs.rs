@@ -55,6 +55,11 @@ pub struct RunEntry {
     pub saved: Option<String>,
     /// Read back from an earlier session's history: dimmed.
     pub earlier: bool,
+    /// It ended unviewed and hasn't been viewed since (the "new" dot): `Some(true)` if it
+    /// failed.
+    pub unseen: Option<bool>,
+    /// Its chain's `notify:`.
+    pub notify: Option<bool>,
 }
 
 impl RunEntry {
@@ -80,6 +85,8 @@ impl RunEntry {
             ended: Some((r.ended, Duration::from_millis(r.duration_ms))),
             saved: Some(saved.key),
             earlier: true,
+            unseen: None,
+            notify: None,
         }
     }
 
@@ -248,6 +255,11 @@ impl Runs {
     }
 
     /// The run taken over in raw style, which the main loop hands the terminal.
+    /// A run is taken over raw: it owns the real terminal.
+    pub fn in_raw_takeover(&self) -> bool {
+        self.takeover.and_then(|i| self.entries.get(i)).is_some_and(|e| e.style == TakeoverStyle::Raw)
+    }
+
     pub fn raw_takeover(&mut self) -> Option<&mut Run> {
         let i = self.takeover?;
         let e = self.entries.get_mut(i)?;
@@ -336,6 +348,8 @@ impl App {
                     ended: None,
                     saved: None,
                     earlier: false,
+                    unseen: None,
+                    notify: None,
                 });
                 let i = self.runs.entries.len() - 1;
                 self.runs.sel = i;
@@ -361,13 +375,14 @@ impl App {
         self.finish_picker();
         if ended {
             self.refresh();
+            self.reload_if_changed();
         }
-        // After the refresh, so an ephemeral run's failure toast isn't replaced by it.
         self.drop_ended_ephemeral();
         if self.runs.keys && self.runs.selected_live().is_none() {
             self.runs.keys = false;
         }
-        plugins || ended
+        let feedback = self.tick_feedback();
+        plugins || ended || feedback
     }
 
     /// Polls and sizes the runs, and saves those that ended; true when one ended.
@@ -400,6 +415,7 @@ impl App {
         }
         for &id in &ended {
             self.finish(id, false);
+            self.announce(id);
         }
         !ended.is_empty()
     }
@@ -419,7 +435,7 @@ impl App {
         self.save_run(id);
     }
 
-    /// Ended ephemeral runs leave Runs; a failure leaves a toast with its code.
+    /// Ended ephemeral runs leave Runs (a failure has toasted).
     fn drop_ended_ephemeral(&mut self) {
         while let Some(i) = self.runs.entries.iter().position(|e| e.ephemeral && !e.is_live()) {
             // Focus goes back to where it was launched from, unless it has moved on since.
@@ -428,9 +444,6 @@ impl App {
             if watched {
                 self.runs.keys = false;
                 self.set_focus(e.came_from);
-            }
-            if let Mark::Failed(why) = Mark::of(&e) {
-                self.toast = Some(format!("{} failed: {why}", e.label));
             }
         }
     }
@@ -555,6 +568,8 @@ mod tests {
             ended: None,
             saved: None,
             earlier: false,
+            unseen: None,
+            notify: None,
         }
     }
 

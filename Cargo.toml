@@ -26,3 +26,6 @@ tempfile = "3"
 # build dependencies optimised even in dev.
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.release]
+strip = true

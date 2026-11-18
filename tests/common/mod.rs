@@ -183,6 +183,13 @@ impl AppScreen {
         std::fs::read_to_string(self.config_dir.as_ref().unwrap().path().join("config.yaml")).unwrap()
     }
 
+    /// Replaces the config file, as an editor would; `name` beside it (`themes/x.yaml`) when given.
+    pub fn write_config(&self, name: &str, text: &str) {
+        let path = self.config_dir.as_ref().unwrap().path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
     /// The backup of the config file, if one was made.
     pub fn backup(&self) -> Option<String> {
         std::fs::read_to_string(self.config_dir.as_ref().unwrap().path().join("config.yaml.bak")).ok()
@@ -222,6 +229,21 @@ impl AppScreen {
         for c in text.chars() {
             self.key(ratatui::crossterm::event::KeyCode::Char(c));
         }
+    }
+
+    /// Moves the app's clock on by `secs`, as if that much time had passed.
+    pub fn advance(&mut self, secs: u64) {
+        self.app.pass_time(std::time::Duration::from_secs(secs));
+    }
+
+    /// The terminal gains or loses focus.
+    pub fn focus(&mut self, focused: bool) {
+        self.app.handle_focus(focused);
+    }
+
+    /// The bytes the app has sent to the terminal itself (notifications, the bell) since last asked.
+    pub fn terminal_output(&mut self) -> Vec<u8> {
+        self.app.take_terminal_output()
     }
 
     /// Opens the palette, waits for plugins, and chooses the entry `query` ranks first.

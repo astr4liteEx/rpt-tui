@@ -13,7 +13,7 @@ pub mod chain;
 mod encode;
 mod responder;
 
-pub use encode::{AltScreenFilter, encode_key, encode_mouse, encode_paste};
+pub use encode::{AltScreenFilter, encode_key, encode_mouse, encode_paste, take_focus_reports};
 pub use responder::Colors;
 use responder::Responder;
 
@@ -284,6 +284,11 @@ impl Run {
     /// Reads the emulated screen.
     pub fn with_screen<R>(&self, f: impl FnOnce(&vt100::Screen) -> R) -> R {
         f(self.parser.lock().unwrap().screen())
+    }
+
+    /// The child has focus reports (`?1004`) on: in raw takeover they go to it.
+    pub fn wants_focus_reports(&self) -> bool {
+        self.parser.lock().unwrap().callbacks().focus_reports
     }
 
     /// The visible screen as plain text.

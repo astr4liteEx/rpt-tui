@@ -171,3 +171,23 @@ impl AltScreenFilter {
         out
     }
 }
+
+/// Raw input with the terminal's focus reports (`ESC [ I`, `ESC [ O`) taken out, and whether
+/// the last one said focused: rpt-tui keeps them while a run that didn't ask owns the terminal.
+pub fn take_focus_reports(data: &[u8]) -> (Vec<u8>, Option<bool>) {
+    let (mut rest, mut focused) = (Vec::with_capacity(data.len()), None);
+    let mut i = 0;
+    while i < data.len() {
+        match data[i..] {
+            [0x1b, b'[', b'I', ..] => focused = Some(true),
+            [0x1b, b'[', b'O', ..] => focused = Some(false),
+            _ => {
+                rest.push(data[i]);
+                i += 1;
+                continue;
+            }
+        }
+        i += 3;
+    }
+    (rest, focused)
+}

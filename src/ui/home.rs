@@ -75,9 +75,7 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
             .style(Style::new().bg(t.surface));
         f.render_widget(Paragraph::new(msg).block(block), rect);
     }
-    if let Some(msg) = &app.toast {
-        draw_toast(f, t, msg);
-    }
+    draw_toasts(f, t, &app.toasts());
     // Full width, the right side is no run's pane: live runs keep the pane's size.
     (!full).then(|| Block::bordered().inner(right))
 }
@@ -245,10 +243,10 @@ fn draw_pane(f: &mut Frame, area: Rect, app: &App) {
 fn run_block<'a>(app: &App, entry: &super::runs::RunEntry, colour: ratatui::style::Color) -> Block<'a> {
     let t = &app.theme;
     let now = std::time::SystemTime::now();
-    let mut about = format!("started {}", super::time::when(entry.started, now));
+    let mut about = format!("started {}", crate::time::when(entry.started, now));
     if let Some((_, took)) = &entry.ended {
         let since = now.duration_since(entry.started + *took).unwrap_or_default();
-        about.push_str(&format!(" · {} · {}", super::time::took(*took), super::time::ago(since)));
+        about.push_str(&format!(" · {} · {}", crate::time::took(*took), crate::time::ago(since)));
     }
     Block::bordered()
         .border_type(BorderType::Rounded)
@@ -426,7 +424,8 @@ fn location(p: &Problem) -> String {
 
 fn draw_runs(f: &mut Frame, area: Rect, app: &App) {
     let t = &app.theme;
-    let block = panel(t, "3 Runs", app.focus == Focus::Runs);
+    let title = app.runs_title();
+    let block = panel(t, &title, app.focus == Focus::Runs);
     if app.runs.entries.is_empty() {
         f.render_widget(Paragraph::new(Span::styled("No runs yet.", Style::new().fg(t.muted))).block(block), area);
         return;
@@ -438,13 +437,16 @@ fn draw_runs(f: &mut Frame, area: Rect, app: &App) {
     // Marks line up in a column as wide as the widest shown.
     let marks: Vec<Mark> = order.iter().map(|&i| Mark::of(&app.runs.entries[i])).collect();
     let mark_width = marks.iter().map(|m| m.text().chars().count()).max().unwrap_or(0) + 2;
+    // A column for "new" dots while any run has one.
+    let dots = app.runs.entries.iter().any(|e| e.unseen.is_some());
+    let width = if dots { width.saturating_sub(2) } else { width };
     let items: Vec<ListItem> = order
         .iter()
         .zip(marks)
         .map(|(&i, mark)| {
             let e = &app.runs.entries[i];
-            let when = format!("{} ", super::time::when(e.started, now));
-            let took = e.ended.as_ref().map(|(_, d)| format!(" {}", super::time::took(*d))).unwrap_or_default();
+            let when = format!("{} ", crate::time::when(e.started, now));
+            let took = e.ended.as_ref().map(|(_, d)| format!(" {}", crate::time::took(*d))).unwrap_or_default();
             let room = width.saturating_sub(mark_width + when.chars().count() + took.chars().count());
             let label = fit(&e.label, room);
             let dim = if e.earlier { Modifier::DIM } else { Modifier::empty() };
@@ -453,7 +455,12 @@ fn draw_runs(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 Style::new().fg(t.text)
             };
+            let dot = match e.unseen {
+                Some(failed) => Span::styled("● ", Style::new().fg(if failed { t.err } else { t.accent })),
+                None => Span::raw(if dots { "  " } else { "" }),
+            };
             ListItem::new(Line::from(vec![
+                dot,
                 Span::styled(
                     format!("{:<mark_width$}", mark.text()),
                     Style::new().fg(mark.colour(t)).add_modifier(dim),
@@ -556,19 +563,29 @@ fn draw_placeholder(f: &mut Frame, area: Rect, t: &Theme, title: &str, text: &st
     f.render_widget(Paragraph::new(Span::styled(text.to_string(), Style::new().fg(t.muted))).block(block), area);
 }
 
-fn draw_toast(f: &mut Frame, t: &Theme, msg: &str) {
+/// The toasts, stacked down from the top right, the newest lowest. `ok` is a run's toast:
+/// green when it went well; others (`None`) are errors.
+fn draw_toasts(f: &mut Frame, t: &Theme, toasts: &[(&str, Option<bool>)]) {
     let area = f.area();
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(t.err))
-        .style(Style::new().bg(t.surface));
-    let para = Paragraph::new(msg.to_string()).block(block).wrap(Wrap { trim: true });
-    // Up to 64 columns wide, wrapping onto more lines.
-    let width = (msg.chars().count() as u16 + 4).min(64).min(area.width.saturating_sub(2));
-    let height = (para.line_count(width) as u16).min(area.height.saturating_sub(2));
-    let rect = Rect { x: area.right().saturating_sub(width + 1), y: area.y + 1, width, height };
-    f.render_widget(Clear, rect);
-    f.render_widget(para, rect);
+    let mut y = area.y + 1;
+    for (msg, ok) in toasts {
+        let colour = if *ok == Some(true) { t.ok } else { t.err };
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(colour))
+            .style(Style::new().bg(t.surface));
+        let para = Paragraph::new(msg.to_string()).block(block).wrap(Wrap { trim: true });
+        // Up to 64 columns wide, wrapping onto more lines.
+        let width = (msg.chars().count() as u16 + 4).min(64).min(area.width.saturating_sub(2));
+        let height = (para.line_count(width) as u16).min(area.bottom().saturating_sub(y + 1));
+        if height == 0 {
+            break;
+        }
+        let rect = Rect { x: area.right().saturating_sub(width + 1), y, width, height };
+        f.render_widget(Clear, rect);
+        f.render_widget(para, rect);
+        y += height;
+    }
 }
 
 /// A rectangle `width` × `height` centred in `area`, shrunk to fit.

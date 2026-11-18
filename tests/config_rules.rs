@@ -340,3 +340,31 @@ fn a_config_without_a_theme_gets_one_at_the_end() {
 fn a_theme_line_that_cannot_be_edited_safely_is_left_alone() {
     assert_eq!(config::set_theme("theme: >\n  charm\n", "light"), None);
 }
+
+#[test]
+fn notify_settings_load_and_fill_in_defaults() {
+    let c = config::load("notify: { desktop: false, bell: true, after_secs: 0, command: 'notify-send hi' }\n");
+
+    assert!(c.errors.is_empty(), "{:?}", c.errors);
+    let n = &c.notify;
+    assert_eq!((n.desktop, n.bell, n.after_secs, n.command.as_deref()), (false, true, 0, Some("notify-send hi")));
+    let d = config::load("").notify;
+    assert_eq!((d.desktop, d.bell, d.after_secs, d.command), (true, false, 30, None));
+}
+
+#[test]
+fn bad_notify_settings_keep_their_defaults_and_say_why() {
+    let c = config::load("notify: { desktop: yes, bell: 1, after_secs: -2, command: [x], loud: true }\n");
+
+    assert_eq!(c.notify, config::NotifySettings::default());
+    for want in [
+        "config.yaml: notify: desktop: not true or false",
+        "config.yaml: notify: bell: not true or false",
+        "config.yaml: notify: after_secs: not a whole number of seconds",
+        "config.yaml: notify: command: not a command",
+        "config.yaml: notify: loud: unknown key",
+    ] {
+        assert!(c.errors.iter().any(|e| e == want), "{want}: {:?}", c.errors);
+    }
+    assert_eq!(config::load("notify: 3\n").errors, ["config.yaml: notify: not a map of settings"]);
+}

@@ -169,3 +169,12 @@ mod alt_screen_filter {
         assert_eq!(f.filter(b"\x1b[?25l"), b"\x1b[?25l");
     }
 }
+
+#[test]
+fn focus_reports_are_taken_out_of_raw_input_and_the_last_one_kept() {
+    use rpt_tui::run::take_focus_reports;
+
+    assert_eq!(take_focus_reports(b"ab\x1b[Oc\x1b[I\x1b[Od"), (b"abcd".to_vec(), Some(false)));
+    assert_eq!(take_focus_reports(b"\x1b[A\x1b[I"), (b"\x1b[A".to_vec(), Some(true)), "an arrow stays");
+    assert_eq!(take_focus_reports(b"plain"), (b"plain".to_vec(), None));
+}

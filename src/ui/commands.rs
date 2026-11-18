@@ -307,6 +307,7 @@ impl App {
             Action::ClearHistory => self.ask_clear_history(),
             Action::ExportTranscript => self.ask_export(),
             Action::Theme => self.open_theme_picker(),
+            Action::ReloadConfig => self.reload_config(),
             _ => {}
         }
     }

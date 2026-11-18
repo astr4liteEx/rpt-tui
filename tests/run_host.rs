@@ -305,3 +305,19 @@ os.write(1, b"answered\r\n" if input_ready() else b"unanswered\r\n")
     assert_eq!(wait_end(&mut run, 5), Status::Exited(0));
     assert!(run.contents().contains("unanswered"), "{}", run.contents());
 }
+
+#[test]
+fn a_run_that_asks_for_focus_reports_is_known_to_want_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut run = start(
+        sh(dir.path(), "printf '\\033[?2004;1004h'; echo on; sleep 0.3; printf '\\033[?1004l'; echo off; sleep 5"),
+        10,
+        60,
+    );
+
+    wait_for(&mut run, "on", 5);
+    assert!(run.wants_focus_reports());
+    wait_for(&mut run, "off", 5);
+    assert!(!run.wants_focus_reports());
+    run.kill();
+}

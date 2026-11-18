@@ -143,7 +143,7 @@ impl App {
         };
         let slug: String =
             e.label.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect();
-        let text = format!("~/{slug}-{}.txt", super::time::stamp(e.started));
+        let text = format!("~/{slug}-{}.txt", crate::time::stamp(e.started));
         let line = super::palette::ExportLine { run: e.id, text };
         self.palette = Some(super::palette::State { export: Some(line), ..Default::default() });
     }

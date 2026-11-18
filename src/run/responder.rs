@@ -29,11 +29,21 @@ pub(crate) struct Responder {
     pub(crate) capture: vt100::capture::BasicFormattedCaptureState,
     /// Bytes of transcript kept: `evicted` is cut back to this once it reaches twice as much.
     pub(crate) cap: usize,
+    /// The child turned focus reports (`?1004`) on, so they are its to have.
+    pub(crate) focus_reports: bool,
 }
 
 impl Responder {
     pub(crate) fn new(colors: Colors, enabled: Arc<AtomicBool>, cap: usize) -> Responder {
-        Responder { enabled, colors, replies: vec![], evicted: String::new(), capture: Default::default(), cap }
+        Responder {
+            enabled,
+            colors,
+            replies: vec![],
+            evicted: String::new(),
+            capture: Default::default(),
+            cap,
+            focus_reports: false,
+        }
     }
 
     fn reply(&mut self, s: &str) {
@@ -58,6 +68,9 @@ impl vt100::Callbacks for Responder {
         c: char,
     ) {
         let p0 = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
+        if i1 == Some(b'?') && matches!(c, 'h' | 'l') && params.iter().any(|p| p.first() == Some(&1004)) {
+            self.focus_reports = c == 'h';
+        }
         match (i1, c, p0) {
             // DSR: "terminal OK".
             (None, 'n', 5) => self.reply("\x1b[0n"),
