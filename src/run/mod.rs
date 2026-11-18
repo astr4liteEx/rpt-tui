@@ -54,12 +54,14 @@ pub struct Launch {
     pub argv: Vec<String>,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
+    /// Variables taken out of the inherited environment.
+    pub unset: Vec<String>,
     pub colors: Colors,
 }
 
 impl Launch {
     pub fn new(argv: Vec<String>, cwd: &Path) -> Launch {
-        Launch { argv, cwd: cwd.to_path_buf(), env: vec![], colors: Colors::default() }
+        Launch { argv, cwd: cwd.to_path_buf(), env: vec![], unset: vec![], colors: Colors::default() }
     }
 }
 
@@ -120,6 +122,9 @@ impl Run {
         cmd.cwd(&launch.cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        for k in &launch.unset {
+            cmd.env_remove(k);
+        }
         for (k, v) in &launch.env {
             cmd.env(k, v);
         }

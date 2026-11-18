@@ -13,6 +13,8 @@ use rpt_tui::run::{Launch, Run, Size, Status};
 struct Setup<'a> {
     pane: &'a str,
     editor: &'a str,
+    /// `config.yaml`, in a config folder of its own (never the user's).
+    config: &'a str,
 }
 
 struct Tui {
@@ -51,6 +53,10 @@ fn rpt_tui(setup: Setup) -> Tui {
     );
     spec.env.push(("PATH".into(), path));
     spec.env.push(("VISUAL".into(), editor.display().to_string()));
+    let config = bin.path().join("config");
+    std::fs::create_dir_all(config.join("rpt-tui")).unwrap();
+    std::fs::write(config.join("rpt-tui/config.yaml"), setup.config).unwrap();
+    spec.env.push(("XDG_CONFIG_HOME".into(), config.display().to_string()));
     let run = Run::spawn(spec, Size { rows: 24, cols: 100 }, Arc::new(AtomicBool::new(false))).unwrap();
     Tui { run, report, _bin: bin }
 }
@@ -63,6 +69,15 @@ fn start_pane_run(tui: &mut Run) {
     tui.send(b"t-pane\r");
     until(tui, "rpt t-pane");
     tui.send(b"\r");
+}
+
+/// `q`, then `y` if it asks to kill live runs.
+fn quit(tui: &mut Run) {
+    tui.send(b"q");
+    std::thread::sleep(Duration::from_millis(150));
+    if tui.poll() == Status::Live {
+        tui.send(b"y");
+    }
 }
 
 fn until(run: &mut Run, text: &str) -> String {
@@ -99,7 +114,7 @@ fn a_plugin_from_the_palette_opens_in_the_pane_and_quitting_restores_the_termina
 
     tui.send(CTRL_G);
     std::thread::sleep(Duration::from_millis(100));
-    tui.send(b"q");
+    quit(&mut tui);
 
     assert_eq!(wait_end(&mut tui), Status::Exited(0));
     assert!(!tui.with_screen(|s| s.alternate_screen()), "left the alternate screen");
@@ -130,7 +145,7 @@ fn e_edits_the_selected_finding_in_raw_takeover_which_tees_the_child_and_cleans_
     assert!(s.contains("No runs yet."), "{s}");
     assert!(!tui.with_screen(|s| s.application_cursor()), "application cursor mode was reset");
 
-    tui.send(b"q");
+    quit(&mut tui);
     assert_eq!(wait_end(&mut tui), Status::Exited(0));
 }
 
@@ -147,7 +162,7 @@ fn ctrl_t_leaves_raw_takeover_while_the_run_lives() {
     assert!(s.contains("1 Findings") && s.contains("● live") && s.contains("raw-two"), "{s}");
     tui.send(CTRL_G);
     std::thread::sleep(Duration::from_millis(100));
-    tui.send(b"q");
+    quit(&mut tui);
     assert_eq!(wait_end(&mut tui), Status::Exited(0));
 }
 
@@ -165,7 +180,7 @@ fn leaving_raw_takeover_needs_no_reply_from_the_terminal() {
     let s = until(&mut tui, "1 Findings");
     assert_eq!(tui.poll(), Status::Live, "rpt-tui is still running: {s}");
     assert!(s.contains("1 Findings"), "{s}");
-    tui.send(b"q");
+    quit(&mut tui);
     assert_eq!(wait_end(&mut tui), Status::Exited(0));
 }
 
@@ -181,7 +196,7 @@ fn an_idle_screen_still_shows_a_run_going_quiet() {
     assert!(s.contains("◆ quiet 3s"), "{s}");
     tui.send(CTRL_G);
     std::thread::sleep(Duration::from_millis(100));
-    tui.send(b"q");
+    quit(&mut tui);
     wait_end(&mut tui);
 }
 
@@ -201,7 +216,7 @@ fn quitting_kills_runs_that_ignore_sighup() {
 
     tui.send(CTRL_G);
     std::thread::sleep(Duration::from_millis(100));
-    tui.send(b"q");
+    quit(&mut tui);
     assert_eq!(wait_end(&mut tui), Status::Exited(0));
 
     std::thread::sleep(Duration::from_millis(200));
@@ -221,7 +236,7 @@ fn bytes_after_ctrl_t_in_the_same_read_still_reach_the_run() {
     assert!(s.contains("1 Findings") && s.contains("got:typed"), "{s}");
     tui.send(CTRL_G);
     std::thread::sleep(Duration::from_millis(100));
-    tui.send(b"q");
+    quit(&mut tui);
     wait_end(&mut tui);
 }
 
@@ -237,7 +252,7 @@ fn e_on_a_problem_opens_its_file_at_its_line() {
     assert!(s.contains(&format!("args: +5 {}", file.display())), "{s}");
     tui.send(CTRL_G);
     std::thread::sleep(Duration::from_millis(100));
-    tui.send(b"q");
+    quit(&mut tui);
     wait_end(&mut tui);
 }
 
@@ -251,6 +266,32 @@ fn an_editor_failing_leaves_a_toast_with_its_code_and_no_run() {
     let s = until(&mut tui, "failed: 3");
     assert!(s.contains("edit findings/sqli-login.md failed: 3"), "{s}");
     assert!(s.contains("No runs yet."), "{s}");
-    tui.send(b"q");
+    quit(&mut tui);
+    assert_eq!(wait_end(&mut tui), Status::Exited(0));
+}
+
+#[test]
+fn a_rebound_toggle_takeover_leaves_raw_takeover() {
+    let mut tui = rpt_tui(Setup {
+        editor: r#"echo raw-five; read x; echo "got:$x"; sleep 30"#,
+        config: "keys:\n  toggle_takeover: ctrl-o\n",
+        ..Setup::default()
+    });
+    until(&mut tui, "1 Findings");
+    tui.send(b"e");
+    until(&mut tui, "raw-five");
+
+    tui.send(b"\x14");
+    std::thread::sleep(Duration::from_millis(300));
+    tui.poll();
+    assert!(!tui.contents().contains("1 Findings"), "ctrl-t went to the run: {}", tui.contents());
+
+    tui.send(b"\x0f");
+
+    let s = until(&mut tui, "1 Findings");
+    assert!(s.contains("1 Findings") && s.contains("● live"), "ctrl-o left takeover: {s}");
+    tui.send(CTRL_G);
+    std::thread::sleep(Duration::from_millis(100));
+    quit(&mut tui);
     assert_eq!(wait_end(&mut tui), Status::Exited(0));
 }

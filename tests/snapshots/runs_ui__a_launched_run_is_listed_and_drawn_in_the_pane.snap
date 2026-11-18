@@ -1,6 +1,5 @@
 ---
 source: tests/runs_ui.rs
-assertion_line: 76
 expression: s
 ---
  rpt-tui   <report>   3 findings  1 error  0 warnings
@@ -22,7 +21,7 @@ expression: s
 │ ▌✘ error S-99…  findings/tls-weak.md:5 ││                                                        │
 ╰────────────────────────────────────────╯│                                                        │
 ╭ 3 Runs ────────────────────────────────╮│                                                        │
-│ ▌● live      greeter                   ││                                                        │
+│ ▌● live      hh:mm:ss greeter          ││                                                        │
 │                                        ││                                                        │
 │                                        ││                                                        │
 ╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯

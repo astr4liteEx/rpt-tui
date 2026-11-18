@@ -62,6 +62,32 @@ pub fn stand_in_rpt(dir: &Path, name: &str, script: &str) -> PathBuf {
     path
 }
 
+/// Clock times (`14:03:22`) written as `hh:mm:ss`, so screens with runs compare the same.
+pub fn mask_clock(s: &str) -> String {
+    let c: Vec<char> = s.chars().collect();
+    let d = |i: usize| c.get(i).is_some_and(|x| x.is_ascii_digit());
+    let mut out = String::new();
+    let mut i = 0;
+    while i < c.len() {
+        if d(i)
+            && d(i + 1)
+            && c.get(i + 2) == Some(&':')
+            && d(i + 3)
+            && d(i + 4)
+            && c.get(i + 5) == Some(&':')
+            && d(i + 6)
+            && d(i + 7)
+        {
+            out.push_str("hh:mm:ss");
+            i += 8;
+        } else {
+            out.push(c[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// One row of a ratatui buffer as text, the way a terminal shows it: the cell after a
 /// wide character is hidden behind it, so it is skipped.
 pub fn row_text(buf: &ratatui::buffer::Buffer, y: u16) -> String {
@@ -81,6 +107,8 @@ pub struct AppScreen {
     pub term: ratatui::Terminal<ratatui::backend::TestBackend>,
     pub report: tempfile::TempDir,
     pub plugins: tempfile::TempDir,
+    /// The folder holding `config.yaml`, when the app was started from a file.
+    pub config_dir: Option<tempfile::TempDir>,
 }
 
 /// A stand-in plugin in `dir` answering `--describe` with `describe`, otherwise running `body`.
@@ -96,12 +124,40 @@ impl AppScreen {
     /// The fixture report with `config` (YAML) and the plugins in `plugins` alone on rpt's PATH
     /// (plus enough system for bash).
     pub fn new(config: &str, plugins: tempfile::TempDir) -> AppScreen {
+        AppScreen::start(plugins, None, |client| rpt_tui::ui::App::with_config(client, rpt_tui::config::load(config)))
+    }
+
+    /// The fixture report and `plugins` on rpt's PATH, with the app `make` builds from a client.
+    fn start(
+        plugins: tempfile::TempDir,
+        config_dir: Option<tempfile::TempDir>,
+        make: impl FnOnce(rpt_tui::rpt::Client) -> rpt_tui::ui::App,
+    ) -> AppScreen {
         let report = fixture();
         let path = format!("{}:/usr/bin:/bin", plugins.path().display());
-        let client = rpt_tui::rpt::Client::new(rpt_bin(), report.path()).with_path(path.as_ref());
-        let app = rpt_tui::ui::App::with_config(client, rpt_tui::config::load(config));
+        let app = make(rpt_tui::rpt::Client::new(rpt_bin(), report.path()).with_path(path.as_ref()));
         let term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
-        AppScreen { app, term, report, plugins }
+        AppScreen { app, term, report, plugins, config_dir }
+    }
+
+    /// As [`AppScreen::new`], started from `config` written to a `config.yaml` it may edit.
+    pub fn from_file(config: &str) -> AppScreen {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.yaml");
+        std::fs::write(&file, config).unwrap();
+        AppScreen::start(tempfile::tempdir().unwrap(), Some(dir), |client| {
+            rpt_tui::ui::App::from_config_file(client, &file)
+        })
+    }
+
+    /// The config file as it now is.
+    pub fn config(&self) -> String {
+        std::fs::read_to_string(self.config_dir.as_ref().unwrap().path().join("config.yaml")).unwrap()
+    }
+
+    /// The backup of the config file, if one was made.
+    pub fn backup(&self) -> Option<String> {
+        std::fs::read_to_string(self.config_dir.as_ref().unwrap().path().join("config.yaml.bak")).ok()
     }
 
     pub fn draw(&mut self) -> String {
@@ -109,7 +165,7 @@ impl AppScreen {
         self.app.tick();
         let buf = self.term.backend().buffer();
         let text: Vec<String> = (0..buf.area.height).map(|y| row_text(buf, y)).collect();
-        text.join("\n").replace(&self.report.path().display().to_string(), "<report>")
+        mask_clock(&text.join("\n").replace(&self.report.path().display().to_string(), "<report>"))
     }
 
     /// Draws until the screen contains `text`, for up to eight seconds.

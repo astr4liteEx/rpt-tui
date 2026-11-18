@@ -49,8 +49,9 @@ impl App {
         if form.chain.params.is_empty() {
             self.palette = None;
             self.run_chain(&form);
-        } else if let Some(state) = self.palette.as_mut() {
-            state.form = Some(form);
+        } else {
+            // From a hotkey the palette isn't open yet; esc in the form then goes to it.
+            self.palette.get_or_insert_with(Default::default).form = Some(form);
         }
     }
 
@@ -59,6 +60,9 @@ impl App {
         let (clash, keep): (Vec<Chain>, Vec<Chain>) =
             std::mem::take(&mut self.chains).into_iter().partition(|c| plugins.contains(&c.name));
         self.chains = keep;
+        if !clash.is_empty() {
+            self.rebind();
+        }
         let msgs: Vec<String> =
             clash.iter().map(|c| format!("chain {}: named like the plugin {0}; left out", c.name)).collect();
         if !msgs.is_empty() {

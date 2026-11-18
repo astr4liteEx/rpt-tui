@@ -11,7 +11,7 @@ pub const RPT_VERBS: [&str; 10] =
     ["add", "assemble", "delete", "findings", "plugins", "scope", "set", "severities", "validate", "version"];
 
 /// Top-level keys read by later parts of the TUI; accepted here without a complaint.
-const LATER_KEYS: [&str; 4] = ["theme", "keys", "history", "notify"];
+const LATER_KEYS: [&str; 3] = ["theme", "history", "notify"];
 
 const CHAIN_KEYS: [&str; 9] =
     ["description", "key", "params", "needs", "ephemeral", "display", "takeover", "notify", "steps"];
@@ -104,6 +104,14 @@ pub struct Chain {
     pub steps: Vec<Step>,
 }
 
+/// One entry under `keys:`: an action's name and its keys as written; none means unbound.
+/// Names and notation are checked with the bindings, which can say which default stays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeySetting {
+    pub action: String,
+    pub keys: Vec<String>,
+}
+
 /// What `config.yaml` says, as far as this part of the TUI reads it.
 #[derive(Debug, Default)]
 pub struct Config {
@@ -111,6 +119,8 @@ pub struct Config {
     pub chains: Vec<Chain>,
     /// `file_picker:`: replaces fzf as the file picker.
     pub file_picker: Option<String>,
+    /// `keys:`, in file order.
+    pub keys: Vec<KeySetting>,
     /// One message per problem, for the startup toast.
     pub errors: Vec<String>,
 }
@@ -163,11 +173,31 @@ pub fn load(text: &str) -> Config {
                 Value::Null => {}
                 _ => config.errors.push("config.yaml: file_picker: not a command line".into()),
             },
+            "keys" => load_keys(value, &mut config),
             k if LATER_KEYS.contains(&k) => {}
             k => config.errors.push(format!("config.yaml: unknown key `{k}`")),
         }
     }
     config
+}
+
+fn load_keys(value: &Value, config: &mut Config) {
+    let keys = match value {
+        Value::Object(m) => m,
+        Value::Null => return,
+        _ => return config.errors.push("config.yaml: keys: not a map of actions".into()),
+    };
+    for (action, v) in keys {
+        let written = match v {
+            Value::Null => Some(vec![]),
+            Value::Array(list) => list.iter().map(scalar).collect(),
+            v => scalar(v).map(|k| vec![k]),
+        };
+        match written {
+            Some(keys) => config.keys.push(KeySetting { action: action.clone(), keys }),
+            None => config.errors.push(format!("config.yaml: keys: {action}: not a key or a list of keys")),
+        }
+    }
 }
 
 fn load_chains(value: &Value, config: &mut Config) {
@@ -208,7 +238,9 @@ fn chain(name: &str, body: &Value) -> Result<Chain, String> {
     Ok(Chain {
         name: name.into(),
         description: opt_string(m, "description")?.unwrap_or_default(),
-        key: opt_string(m, "key")?,
+        // Kept as written, even when it isn't one value: a bad hotkey costs the chain only its
+        // hotkey, found with the keys.
+        key: m.get("key").filter(|v| !v.is_null()).map(|v| scalar(v).unwrap_or_else(|| v.to_string())),
         params,
         needs: one_of(m, "needs", &[("finding", Needs::Finding), ("problem", Needs::Problem), ("any", Needs::Any)])?,
         ephemeral: opt_bool(m, "ephemeral")?.unwrap_or(false),
@@ -319,4 +351,146 @@ fn one_of<T: Copy>(m: &Map<String, Value>, key: &str, values: &[(&str, T)]) -> R
             Err(format!("{key}: `{given}` is not one of {}", names.join(", ")))
         }
     }
+}
+
+/// A key as a YAML scalar: bare when it is plain letters, digits and hyphens, else quoted.
+fn yaml_key(k: &str) -> String {
+    let plain = k.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && !matches!(k.to_ascii_lowercase().as_str(), "null" | "true" | "false");
+    if plain { k.to_string() } else { format!("'{}'", k.replace('\'', "''")) }
+}
+
+/// Keys as a YAML value: one key, a flow list, or `null` for none.
+pub fn yaml_keys(keys: &[String]) -> String {
+    match keys {
+        [] => "null".into(),
+        [k] => yaml_key(k),
+        ks => format!("[{}]", ks.iter().map(|k| yaml_key(k)).collect::<Vec<_>>().join(", ")),
+    }
+}
+
+fn indent(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+fn blank(line: &str) -> bool {
+    let t = line.trim();
+    t.is_empty() || t.starts_with('#')
+}
+
+/// `line` is `name:` with nothing after it but a comment.
+fn opens_block(line: &str, name: &str) -> bool {
+    line.trim_start().strip_prefix(name).and_then(|r| r.strip_prefix(':')).is_some_and(blank)
+}
+
+/// The lines after `at` that are inside its block (blank, or indented deeper than `outer`):
+/// the end index (exclusive) and the indent of their first entry.
+fn block(lines: &[&str], at: usize, outer: usize) -> (usize, Option<usize>) {
+    let mut end = at + 1;
+    let mut inner = None;
+    while end < lines.len() && (blank(lines[end]) || indent(lines[end]) > outer) {
+        if !blank(lines[end]) {
+            inner.get_or_insert(indent(lines[end]));
+        }
+        end += 1;
+    }
+    // Trailing blank lines belong after the block.
+    while end > at + 1 && blank(lines[end - 1]) {
+        end -= 1;
+    }
+    (end, inner)
+}
+
+/// The text with chain `name`'s `key:` set to `key` (or removed), or `None` when the file's
+/// shape can't be edited safely (flow style, a quoted name). The result is read back and must
+/// differ only there, which also refuses anchors and merges the edit would change.
+pub fn set_chain_key(text: &str, name: &str, key: Option<&str>) -> Option<String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let chains = lines.iter().position(|l| indent(l) == 0 && opens_block(l, "chains"))?;
+    let (end, ci) = block(&lines, chains, 0);
+    let head = (chains + 1..end).find(|&i| Some(indent(lines[i])) == ci && opens_block(lines[i], name))?;
+    let (body_end, ki) = block(&lines, head, ci?);
+    let ki = ki?;
+    let line = key.map(|k| format!("{}key: {}\n", " ".repeat(ki), yaml_key(k)));
+    let at = (head + 1..body_end).find(|&i| indent(lines[i]) == ki && lines[i].trim_start().starts_with("key:"));
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    match (at, line) {
+        (Some(i), Some(l)) => out[i] = l,
+        (Some(i), None) => {
+            out.remove(i);
+        }
+        (None, Some(l)) => out.insert(head + 1, l),
+        (None, None) => {}
+    }
+    let out = out.concat();
+    let mut want = load(text);
+    want.chains.iter_mut().find(|c| c.name == name)?.key = key.map(String::from);
+    same(&want, &load(&out)).then_some(out)
+}
+
+/// The text with `keys:`'s entry for `action` set to `keys` (`Some(&[])` is `null`), or
+/// removed with `None`; `keys:` is added at the end when missing. `None` when the file's shape
+/// can't be edited safely; the result is read back and must differ only there.
+pub fn set_action_keys(text: &str, action: &str, keys: Option<&[String]>) -> Option<String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    let entry = |i: usize| keys.map(|k| format!("{}{action}: {}\n", " ".repeat(i), yaml_keys(k)));
+    match lines.iter().position(|l| indent(l) == 0 && l.starts_with("keys:")) {
+        Some(at) => {
+            if !opens_block(lines[at], "keys") {
+                return None;
+            }
+            let (end, inner) = block(&lines, at, 0);
+            let ki = inner.unwrap_or(2);
+            let found = (at + 1..end).find(|&i| indent(lines[i]) == ki && opens_entry(lines[i], action));
+            match found {
+                Some(i) => {
+                    // The entry's own lines: deeper ones, or a list's `- ` items at its indent.
+                    let mut last = i + 1;
+                    while last < end
+                        && (indent(lines[last]) > ki
+                            || indent(lines[last]) == ki && lines[last].trim_start().starts_with("- "))
+                    {
+                        last += 1;
+                    }
+                    out.splice(i..last, entry(ki));
+                }
+                None => {
+                    if let Some(l) = entry(ki) {
+                        out.insert(end, l);
+                    }
+                }
+            }
+        }
+        None => {
+            if let Some(l) = entry(2) {
+                if out.last().is_some_and(|l| !l.ends_with('\n')) {
+                    out.push("\n".into());
+                }
+                out.push(format!("keys:\n{l}"));
+            }
+        }
+    }
+    let out = out.concat();
+    let mut want = load(text);
+    let at = want.keys.iter().position(|s| s.action == action);
+    match (at, keys) {
+        (Some(i), Some(k)) => want.keys[i].keys = k.to_vec(),
+        (Some(i), None) => {
+            want.keys.remove(i);
+        }
+        (None, Some(k)) => want.keys.push(KeySetting { action: action.into(), keys: k.to_vec() }),
+        (None, None) => {}
+    }
+    same(&want, &load(&out)).then_some(out)
+}
+
+/// `line` is the entry `name:` (with any value).
+fn opens_entry(line: &str, name: &str) -> bool {
+    line.trim_start().strip_prefix(name).is_some_and(|r| r.starts_with(':'))
+}
+
+fn same(a: &Config, b: &Config) -> bool {
+    a.chains == b.chains && a.keys == b.keys && a.file_picker == b.file_picker && a.errors == b.errors
 }

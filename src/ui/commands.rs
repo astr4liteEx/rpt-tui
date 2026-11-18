@@ -10,6 +10,7 @@ use super::palette::{self, ArgLine, Entry, Kind, Row};
 use super::runs::{Display, TakeoverStyle};
 use super::{App, Focus};
 use crate::config::Step;
+use crate::keys::Action;
 use crate::rpt::{self, Client, Plugin};
 
 /// rpt's built-in verbs the palette offers, with the usage of those taking an argument line.
@@ -24,15 +25,20 @@ const RPT_BUILTINS: [(&str, &str, Option<&str>); 7] = [
     ("delete", "Delete findings", Some("rpt delete <id>...")),
 ];
 
-/// The TUI's own actions that work so far, with their keys.
-const TUI_ACTIONS: [(&str, &str, &str); 7] = [
-    ("quit", "Quit rpt-tui", "q"),
-    ("focus_next", "Focus the next panel", "tab"),
-    ("focus_findings", "Focus Findings", "1"),
-    ("focus_problems", "Focus Problems", "2"),
-    ("focus_runs", "Focus Runs", "3"),
-    ("takeover", "Take over the selected run", "f"),
-    ("kill_or_delete", "Kill the selected run", "x"),
+/// Actions the palette leaves out: list movement, run keys, and those with a row of their own
+/// (`validate` is rpt's, `edit` a chain's).
+const UNLISTED: [Action; 11] = [
+    Action::Palette,
+    Action::Down,
+    Action::Up,
+    Action::Top,
+    Action::Bottom,
+    Action::Open,
+    Action::Back,
+    Action::Edit,
+    Action::Validate,
+    Action::LeaveRun,
+    Action::ToggleTakeover,
 ];
 
 /// rpt's plugins: being listed in the background, then the list.
@@ -85,24 +91,46 @@ impl App {
     /// Everything the palette offers, group by group.
     pub(super) fn entries(&self) -> Vec<Entry> {
         let mut out = vec![];
-        let mut edit = Entry::new(Kind::Chain, "edit", "Open the selected finding or problem in your editor");
-        edit.key = Some("e".into());
-        edit.builtin = true;
-        edit.disabled = self.edit_target().is_none().then(|| "needs a finding or problem".into());
+        let written = |a: Action| Some(self.bindings.written(a)).filter(|k| !k.is_empty());
+        // `edit` comes first, keyed by the `edit` action: the user's chain of that name, or the
+        // built-in.
+        let mut edit = match self.user_edit() {
+            Some(c) => {
+                let mut e = Entry::new(Kind::Chain, "edit", &c.description);
+                e.disabled = self.unmet(c.needs).map(String::from);
+                e
+            }
+            None => {
+                let mut e = Entry::new(Kind::Chain, "edit", "Open the selected finding or problem in your editor");
+                e.builtin = true;
+                e.disabled = self.edit_target().is_none().then(|| "needs a finding or problem".into());
+                e
+            }
+        };
+        edit.key = written(Action::Edit);
         out.push(edit);
-        out.extend(self.chains.iter().map(|c| Entry::new(Kind::Chain, &c.name, &c.description)));
+        for c in self.chains.iter().filter(|c| c.name != "edit") {
+            let mut e = Entry::new(Kind::Chain, &c.name, &c.description);
+            e.key = self.bindings.chain_key(&c.name).map(|k| k.to_string());
+            e.disabled = self.unmet(c.needs).map(String::from);
+            out.push(e);
+        }
         if let Plugins::Ready(list) = &self.plugins {
             out.extend(list.iter().map(plugin_entry));
         }
         for (name, summary, usage) in RPT_BUILTINS {
             let mut e = Entry::new(Kind::Rpt, name, summary);
             e.args = usage.map(String::from);
-            e.key = (name == "validate").then(|| "v".into());
+            e.key = if name == "validate" { written(Action::Validate) } else { None };
             out.push(e);
         }
-        for (name, summary, key) in TUI_ACTIONS {
-            let mut e = Entry::new(Kind::Tui, name, summary);
-            e.key = Some(key.into());
+        let fixable = self.fixable_troubles() > 0;
+        for a in Action::ALL.iter().filter(|a| a.works() && !UNLISTED.contains(a)) {
+            if *a == Action::FixKeys && !fixable {
+                continue;
+            }
+            let mut e = Entry::new(Kind::Tui, a.name(), a.summary());
+            e.key = written(*a);
             out.push(e);
         }
         out
@@ -217,22 +245,63 @@ impl App {
             }
             Kind::Tui => {
                 self.palette = None;
-                self.action(&entry.name)
+                if let Some(a) = Action::named(&entry.name) {
+                    self.act(a);
+                }
             }
         }
     }
 
-    /// A TUI action by name.
-    fn action(&mut self, name: &str) {
-        match name {
-            "quit" => self.quit = true,
-            "focus_next" => self.focus_next(),
-            "focus_findings" => self.set_focus(Focus::Findings),
-            "focus_problems" => self.set_focus(Focus::Problems),
-            "focus_runs" => self.set_focus(Focus::Runs),
-            "takeover" => self.take_over_selected(),
-            "kill_or_delete" => self.kill_selected(),
+    /// Does an action while keys go to the TUI.
+    pub(super) fn act(&mut self, action: Action) {
+        match action {
+            Action::Palette => self.open_palette(),
+            Action::Quit => self.request_quit(),
+            Action::Help => self.help = Some(0),
+            Action::FixKeys => self.open_guide(),
+            Action::FocusNext => self.focus_next(),
+            Action::FocusFindings => self.set_focus(Focus::Findings),
+            Action::FocusProblems => self.set_focus(Focus::Problems),
+            Action::FocusRuns => self.set_focus(Focus::Runs),
+            Action::Validate => self.run_line(Entry::new(Kind::Rpt, "validate", "").id(), "rpt validate"),
+            Action::Down => self.move_by(1),
+            Action::Up => self.move_by(-1),
+            Action::Top => self.move_to(0),
+            Action::Bottom => self.move_to(usize::MAX),
+            Action::Open if self.focus == Focus::Runs => self.runs.keys = self.runs.selected_live().is_some(),
+            Action::Open => {
+                self.full = true;
+                self.scroll = 0;
+            }
+            Action::Back if self.full => self.full = false,
+            Action::Back if self.focus == Focus::Runs => self.set_focus(self.last_list),
+            Action::Edit => self.edit_action(),
+            Action::Takeover => self.take_over_selected(),
+            Action::KillOrDelete => self.kill_selected(),
             _ => {}
+        }
+    }
+
+    /// `e`: a user chain named `edit`, else the built-in.
+    fn edit_action(&mut self) {
+        if self.user_edit().is_some() {
+            self.hotkey("edit");
+        } else {
+            self.edit();
+        }
+    }
+
+    /// The user's chain named `edit`, which replaces the built-in.
+    fn user_edit(&self) -> Option<&crate::config::Chain> {
+        self.chains.iter().find(|c| c.name == "edit")
+    }
+
+    /// A chain's hotkey: runs it (or opens its form), unless its `needs` aren't met.
+    pub(super) fn hotkey(&mut self, name: &str) {
+        let Some(chain) = self.chains.iter().find(|c| c.name == name).cloned() else { return };
+        match self.unmet(chain.needs) {
+            Some(why) => self.toast = Some(format!("{name} {why}")),
+            None => self.choose_chain(chain),
         }
     }
 

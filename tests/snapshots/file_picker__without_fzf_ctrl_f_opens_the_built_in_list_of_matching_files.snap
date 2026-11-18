@@ -25,4 +25,4 @@ expression: out
 │                                        ││                                                        │
 │                                        ││                                                        │
 ╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
- : commands · e edit · v validate · j/k move · tab/1-3 focus · q quit
+ : commands · e edit · enter open · v validate · j/k move · tab focus · ? help · q quit

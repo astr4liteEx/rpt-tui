@@ -4,11 +4,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use super::{App, Focus};
+use crate::keys::Action;
 use crate::run::chain::Scratch;
 use crate::run::{Colors, KILL_GRACE, Launch, Run, Size, Status};
 
@@ -37,6 +38,21 @@ pub struct RunEntry {
     pub scratch: Option<Scratch>,
     /// The step a chain stopped at, once it has failed.
     pub failed_step: Option<usize>,
+    /// When it started, shown in Runs so repeated listings can be told apart.
+    pub started: std::time::SystemTime,
+    /// The panel focused when it was launched; an ephemeral run gives focus back to it.
+    pub came_from: Focus,
+}
+
+/// A start time as the local clock reads it: `14:03:22`.
+pub fn clock(t: std::time::SystemTime) -> String {
+    let secs = t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as libc::time_t;
+    // SAFETY: localtime_r only writes the tm it is given.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
+        return "--:--:--".into();
+    }
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
 /// The Runs panel's state.
@@ -141,7 +157,7 @@ impl Runs {
         self.entries.get(self.sel)
     }
 
-    fn selected_live(&self) -> Option<usize> {
+    pub(super) fn selected_live(&self) -> Option<usize> {
         self.selected().filter(|e| e.run.status() == Status::Live).map(|_| self.sel)
     }
 
@@ -206,6 +222,9 @@ impl App {
         display: Display,
         scratch: Option<Scratch>,
     ) -> Option<usize> {
+        // Only the current selection's variables: none inherited from rpt-tui's own environment.
+        launch.unset.extend(super::SELECTION_VARS.iter().map(|v| v.to_string()));
+        launch.env.extend(self.selection_env());
         launch.env.push(("RPT_REPORT_DIR".into(), self.view.root.display().to_string()));
         launch.env.push(("PATH".into(), self.client.path().to_string_lossy().into_owned()));
         let defaults = Colors::default();
@@ -225,6 +244,8 @@ impl App {
                     ephemeral: false,
                     scratch,
                     failed_step: None,
+                    started: std::time::SystemTime::now(),
+                    came_from: self.focus,
                 });
                 let i = self.runs.entries.len() - 1;
                 self.runs.sel = i;
@@ -293,24 +314,29 @@ impl App {
     /// Ended ephemeral runs leave Runs; a failure leaves a toast with its code.
     fn drop_ended_ephemeral(&mut self) {
         while let Some(i) = self.runs.entries.iter().position(|e| e.ephemeral && e.run.status() != Status::Live) {
+            // Focus goes back to where it was launched from, unless it has moved on since.
+            let watched = self.focus == Focus::Runs && self.runs.sel == i;
             let e = self.runs.remove(i);
+            if watched {
+                self.runs.keys = false;
+                self.set_focus(e.came_from);
+            }
             if let Mark::Failed(why) = Mark::of(&e) {
                 self.toast = Some(format!("{} failed: {why}", e.label));
             }
         }
     }
 
-    /// Keys while a run has them: `ctrl-g` takes them back, `ctrl-t` switches pane and takeover,
-    /// anything else goes to the run. Returns false when no run has the keys.
+    /// Keys while a run has them: `leave_run` takes them back, `toggle_takeover` switches pane
+    /// and takeover, anything else goes to the run. Returns false when no run has the keys.
     pub(super) fn run_key(&mut self, key: KeyEvent) -> bool {
         let Some(i) = self.runs.key_target() else { return false };
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Char('g') if ctrl => {
+        match self.bindings.run_action(&key) {
+            Some(Action::LeaveRun) => {
                 self.runs.leave_takeover();
                 self.runs.keys = false;
             }
-            KeyCode::Char('t') if ctrl => self.toggle_takeover(i),
+            Some(Action::ToggleTakeover) => self.toggle_takeover(i),
             _ => self.runs.entries[i].run.send_key(&key),
         }
         true
@@ -322,22 +348,6 @@ impl App {
         } else {
             self.runs.enter_takeover(i);
         }
-    }
-
-    /// Keys for the Runs panel itself (focus on Runs, no run holding the keys).
-    pub(super) fn runs_panel_key(&mut self, key: KeyEvent) -> bool {
-        let len = self.runs.entries.len();
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.runs.sel = (self.runs.sel + 1).min(len.saturating_sub(1)),
-            KeyCode::Char('k') | KeyCode::Up => self.runs.sel = self.runs.sel.saturating_sub(1),
-            KeyCode::Char('g') => self.runs.sel = 0,
-            KeyCode::Char('G') => self.runs.sel = len.saturating_sub(1),
-            KeyCode::Enter => self.runs.keys = self.runs.selected_live().is_some(),
-            KeyCode::Char('f') => self.take_over_selected(),
-            KeyCode::Char('x') => self.kill_selected(),
-            _ => return false,
-        }
-        true
     }
 
     pub(super) fn take_over_selected(&mut self) {
@@ -404,6 +414,8 @@ mod tests {
             ephemeral: false,
             scratch: None,
             failed_step: None,
+            started: std::time::SystemTime::now(),
+            came_from: Focus::Findings,
         }
     }
 

@@ -1,0 +1,28 @@
+---
+source: tests/keys_ui.rs
+expression: full
+---
+ rpt-tui   <report>   3 findings  1 error  0 warnings
+╭ Preview ─────────────────────────────────────────────────────────────────────────────────────────╮
+│ F-003  SQL injection in login                                                                    │
+│ ● high   scope S-12, S-14   evidence 1                                                           │
+│ findings/sqli-login.md                                                                           │
+│                                                                                                  │
+│ ## Description                                                                                   │
+│ The `user` parameter of `/login` is concatenated into a SQL query.                               │
+│                                                                                                  │
+│ ## Remediation                                                                                   │
+│ Use parameterised queries.                                                                       │
+│                                                                                                  │
+│ ## Proof of concept                                                                              │
+│ ```sh                                                                                            │
+│ ## not a heading: inside a code fence                                                            │
+│ curl -d "user=' OR 1=1--" https://10.0.0.5/login                                                 │
+│ ```                                                                                              │
+│                                                                                                  │
+│ ![login bypass](evidence/F-003-login.png)                                                        │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ j/k scroll · e edit · esc back · ? help · q quit

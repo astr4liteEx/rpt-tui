@@ -1,0 +1,28 @@
+---
+source: tests/keys_ui.rs
+expression: out
+---
+ rpt-tui   <report>   3 findings  1 error  0 warnings
+╭ 1 Find╭ Keys ────────────────────────────────────────────────────────────────────────────╮───────╮
+│ ▌F-003│ global                                                                           │       │
+│  F-001│   palette            :, ctrl-p        Open the command palette                   │       │
+│  F-002│   quit               q, ctrl-c        Quit rpt-tui                               │       │
+│       │  *help               ?, f1            List the keys                              │       │
+│       │   focus_next         tab              Focus the next panel                       │       │
+│       │   focus_findings     1                Focus Findings                             │ into  │
+│       │   focus_problems     2                Focus Problems                             │       │
+│       │   focus_runs         3                Focus Runs                                 │       │
+│       │  *validate           V                Run rpt validate                           │       │
+│       │   fix-keys           unbound          Fix key clashes in the config              │       │
+│       │                                                                                  │       │
+│       │ lists                                                                            │       │
+╰ 1 high│   down               j, down          Move down                                  │       │
+╭ 2 Prob│   up                 k, up            Move up                                    │       │
+│ ▌✘ err│   top                g                Go to the top                              │       │
+╰───────│   bottom             G                Go to the bottom                           │       │
+╭ 3 Runs│   open               enter            Full view, or the keys to a run            │       │
+│ No run│   back               esc              Leave the full view, or Runs               │       │
+│       │                                                                                  │       │
+│       │ findings, problems                                                               │       │
+╰───────╰ * changed from the default · j/k scroll · esc close ─────────────────────────────╯───────╯
+ : commands · e edit · enter open · V validate · j/k move · tab focus · ? help · q quit

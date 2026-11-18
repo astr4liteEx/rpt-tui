@@ -10,6 +10,7 @@ use ratatui::{
 
 use super::{App, Focus, Mark, form::Form, palette, term::TermView, theme::Theme};
 use crate::config::ParamKind;
+use crate::keys::Action;
 use crate::rpt::{Finding, Problem};
 
 /// Draws the home screen; returns the inside of the right side, where a run's pane goes.
@@ -21,15 +22,24 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
         Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(f.area());
     draw_header(f, header, app);
 
-    let [left, right] = Layout::horizontal([Constraint::Percentage(42), Constraint::Min(0)]).areas(body);
-    let problems_height = (app.view.problems.len() as u16 + 2).clamp(3, 7);
-    let runs_height = (app.runs.entries.len() as u16 + 2).clamp(5, 8);
-    let [lf, lp, lr] =
-        Layout::vertical([Constraint::Min(5), Constraint::Length(problems_height), Constraint::Length(runs_height)])
-            .areas(left);
-    draw_findings(f, lf, app);
-    draw_problems(f, lp, app);
-    draw_runs(f, lr, app);
+    let full = app.full && app.focus != Focus::Runs;
+    let right = if full {
+        body
+    } else {
+        let [left, right] = Layout::horizontal([Constraint::Percentage(42), Constraint::Min(0)]).areas(body);
+        let problems_height = (app.view.problems.len() as u16 + 2).clamp(3, 7);
+        let runs_height = (app.runs.entries.len() as u16 + 2).clamp(5, 8);
+        let [lf, lp, lr] = Layout::vertical([
+            Constraint::Min(5),
+            Constraint::Length(problems_height),
+            Constraint::Length(runs_height),
+        ])
+        .areas(left);
+        draw_findings(f, lf, app);
+        draw_problems(f, lp, app);
+        draw_runs(f, lr, app);
+        right
+    };
 
     match app.focus {
         Focus::Findings => draw_finding_preview(f, right, app),
@@ -37,17 +47,7 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
         Focus::Runs => draw_pane(f, right, app),
     }
 
-    let hints = if app.runs.key_target().is_some() {
-        " keys go to the run · ctrl-g leave · ctrl-t takeover"
-    } else {
-        match app.focus {
-            Focus::Findings | Focus::Problems => {
-                " : commands · e edit · v validate · j/k move · tab/1-3 focus · q quit"
-            }
-            Focus::Runs => " : commands · enter keys · f takeover · x kill · j/k move · tab/1-3 focus · q quit",
-        }
-    };
-    f.render_widget(Line::from(Span::styled(hints, Style::new().fg(t.muted))), footer);
+    f.render_widget(Line::from(Span::styled(hints(app, full), Style::new().fg(t.muted))), footer);
 
     if let Some(state) = app.palette.as_ref().filter(|_| app.picking.is_none()) {
         draw_palette(f, app, state);
@@ -55,10 +55,147 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
     if let Some(lp) = &app.list_picker {
         draw_list_picker(f, &t, lp);
     }
+    if let Some(at) = app.help {
+        draw_help(f, app, at);
+    }
+    if let (Some(g), Some((trouble, left))) = (&app.guide, app.guide_trouble()) {
+        draw_guide(f, &t, g, &trouble, left);
+    }
+    if app.confirm_quit {
+        let n = app.runs.entries.iter().filter(|e| e.run.status() == crate::run::Status::Live).count();
+        let msg = format!("kill {n} live run{} and quit? y/n", if n == 1 { "" } else { "s" });
+        let rect = centred(f.area(), msg.chars().count() as u16 + 4, 3);
+        f.render_widget(Clear, rect);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(t.warn))
+            .style(Style::new().bg(t.surface));
+        f.render_widget(Paragraph::new(msg).block(block), rect);
+    }
     if let Some(msg) = &app.toast {
         draw_toast(f, &t, msg);
     }
     Some(Block::bordered().inner(right))
+}
+
+/// The footer's key hints, from the live bindings; an unbound action's hint is left out.
+fn hints(app: &App, full: bool) -> String {
+    let b = &app.bindings;
+    let key = |a: Action| b.keys(a).first().map(|k| k.to_string());
+    let hint = |a: Action, what: &str| key(a).map(|k| format!("{k} {what}"));
+    let pair = |x: Action, y: Action, what: &str| match (key(x), key(y)) {
+        (Some(x), Some(y)) => Some(format!("{x}/{y} {what}")),
+        (x, y) => x.or(y).map(|k| format!("{k} {what}")),
+    };
+    let parts: Vec<Option<String>> = if app.runs.key_target().is_some() {
+        vec![
+            Some("keys go to the run".into()),
+            hint(Action::LeaveRun, "leave"),
+            hint(Action::ToggleTakeover, "takeover"),
+        ]
+    } else if full {
+        vec![
+            pair(Action::Down, Action::Up, "scroll"),
+            hint(Action::Edit, "edit"),
+            hint(Action::Back, "back"),
+            hint(Action::Help, "help"),
+            hint(Action::Quit, "quit"),
+        ]
+    } else {
+        let mut v = vec![hint(Action::Palette, "commands")];
+        match app.focus {
+            Focus::Findings | Focus::Problems => {
+                v.extend([hint(Action::Edit, "edit"), hint(Action::Open, "open"), hint(Action::Validate, "validate")])
+            }
+            Focus::Runs => v.extend([
+                hint(Action::Open, "keys"),
+                hint(Action::Takeover, "takeover"),
+                hint(Action::KillOrDelete, "kill"),
+            ]),
+        }
+        v.extend([
+            pair(Action::Down, Action::Up, "move"),
+            hint(Action::FocusNext, "focus"),
+            hint(Action::Help, "help"),
+            hint(Action::Quit, "quit"),
+        ]);
+        v
+    };
+    format!(" {}", parts.into_iter().flatten().collect::<Vec<_>>().join(" · "))
+}
+
+/// Help: the live bindings by context, then chain hotkeys; `*` marks a changed binding.
+fn draw_help(f: &mut Frame, app: &App, at: u16) {
+    let t = app.theme;
+    let b = &app.bindings;
+    let row = |mark: &str, name: &str, keys: String, what: &str| {
+        Line::from(vec![
+            Span::styled(format!(" {mark:1}"), Style::new().fg(t.warn)),
+            Span::styled(format!("{name:<18} "), Style::new().fg(t.text)),
+            Span::styled(format!("{keys:<16} "), Style::new().fg(t.warn)),
+            Span::styled(what.to_string(), Style::new().fg(t.muted)),
+        ])
+    };
+    let heading =
+        |s: &str| Line::from(Span::styled(s.to_string(), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)));
+    let mut lines = vec![];
+    for scope in ["global", "lists", "findings, problems", "runs", "run"] {
+        let actions: Vec<&Action> = Action::ALL.iter().filter(|a| a.works() && a.scope().label() == scope).collect();
+        if actions.is_empty() {
+            continue;
+        }
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(heading(scope));
+        for a in actions {
+            let keys = match b.written(*a) {
+                k if k.is_empty() => "unbound".to_string(),
+                k => k,
+            };
+            lines.push(row(if b.changed(*a) { "*" } else { "" }, a.name(), keys, a.summary()));
+        }
+    }
+    let hotkeys: Vec<Line> = app
+        .chains
+        .iter()
+        .filter_map(|c| b.chain_key(&c.name).map(|k| row("", &c.name, k.to_string(), &c.description)))
+        .collect();
+    if !hotkeys.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(heading("chain hotkeys"));
+        lines.extend(hotkeys);
+    }
+    let area = centred(f.area(), 84, f.area().height);
+    f.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(t.border_focus))
+        .title(Line::from(Span::styled(" Keys ", Style::new().fg(t.accent).add_modifier(Modifier::BOLD))))
+        .title_bottom(Line::from(Span::styled(
+            " * changed from the default · j/k scroll · esc close ",
+            Style::new().fg(t.muted),
+        )))
+        .padding(Padding::horizontal(1))
+        .style(Style::new().bg(t.surface));
+    let inner = block.inner(area);
+    let max = (lines.len() as u16).saturating_sub(inner.height);
+    app.help_max.set(max);
+    let at = at.min(max);
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(Text::from(lines)).scroll((at, 0)), inner);
+}
+
+/// A finding or problem's text in its panel; full width, it scrolls.
+fn draw_view(f: &mut Frame, area: Rect, app: &App, lines: Vec<Line>, title: &str) {
+    let t = app.theme;
+    let mut para = Paragraph::new(Text::from(lines)).block(panel(&t, title, app.full)).wrap(Wrap { trim: false });
+    if app.full {
+        let max = (para.line_count(area.width) as u16).saturating_sub(area.height);
+        app.scroll_max.set(max);
+        para = para.scroll((app.scroll.min(max), 0));
+    }
+    f.render_widget(para, area);
 }
 
 /// The selected run's screen on the right side, bordered in `border_run` while it has the keys.
@@ -104,7 +241,14 @@ pub fn draw_takeover(f: &mut Frame, app: &App, i: usize) {
     let line = Line::from(vec![
         Span::styled(format!(" {} ", entry.label), Style::new().fg(t.bg).bg(t.border_run).add_modifier(Modifier::BOLD)),
         Span::styled(format!(" {} ", Mark::of(entry).text()), Style::new().fg(t.muted)),
-        Span::styled(" ctrl-t pane · ctrl-g leave", Style::new().fg(t.muted)),
+        Span::styled(
+            format!(
+                " {} pane · {} leave",
+                app.bindings.written(Action::ToggleTakeover),
+                app.bindings.written(Action::LeaveRun)
+            ),
+            Style::new().fg(t.muted),
+        ),
     ]);
     f.render_widget(line.style(Style::new().bg(t.surface)), status);
 }
@@ -243,6 +387,7 @@ fn draw_runs(f: &mut Frame, area: Rect, app: &App) {
             let colour = mark.colour(&t);
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:<12}", mark.text()), Style::new().fg(colour)),
+                Span::styled(format!("{} ", super::runs::clock(e.started)), Style::new().fg(t.muted)),
                 if e.ephemeral {
                     Span::styled(e.label.clone(), Style::new().fg(t.muted).add_modifier(Modifier::ITALIC))
                 } else {
@@ -301,8 +446,7 @@ fn draw_finding_preview(f: &mut Frame, area: Rect, app: &App) {
         )));
         lines.extend(body.lines().map(|l| Line::from(Span::styled(l.to_string(), Style::new().fg(t.text)))));
     }
-    let block = panel(&t, "Preview", false);
-    f.render_widget(Paragraph::new(Text::from(lines)).block(block).wrap(Wrap { trim: false }), area);
+    draw_view(f, area, app, lines, "Preview");
 }
 
 fn draw_problem(f: &mut Frame, area: Rect, app: &App) {
@@ -324,8 +468,7 @@ fn draw_problem(f: &mut Frame, area: Rect, app: &App) {
         Line::from(""),
         Line::from(Span::styled(p.message.clone(), Style::new().fg(t.text))),
     ];
-    let block = panel(&t, "Problem", false);
-    f.render_widget(Paragraph::new(Text::from(lines)).block(block).wrap(Wrap { trim: false }), area);
+    draw_view(f, area, app, lines, "Problem");
 }
 
 fn draw_placeholder(f: &mut Frame, area: Rect, t: &Theme, title: &str, text: &str) {
@@ -335,15 +478,17 @@ fn draw_placeholder(f: &mut Frame, area: Rect, t: &Theme, title: &str, text: &st
 
 fn draw_toast(f: &mut Frame, t: &Theme, msg: &str) {
     let area = f.area();
-    let width = (msg.chars().count() as u16 + 4).min(area.width.saturating_sub(2));
-    let height = 3;
-    let rect = Rect { x: area.right().saturating_sub(width + 1), y: area.y + 1, width, height };
-    f.render_widget(Clear, rect);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(t.err))
         .style(Style::new().bg(t.surface));
-    f.render_widget(Paragraph::new(msg.to_string()).block(block), rect);
+    let para = Paragraph::new(msg.to_string()).block(block).wrap(Wrap { trim: true });
+    // Up to 64 columns wide, wrapping onto more lines.
+    let width = (msg.chars().count() as u16 + 4).min(64).min(area.width.saturating_sub(2));
+    let height = (para.line_count(width) as u16).min(area.height.saturating_sub(2));
+    let rect = Rect { x: area.right().saturating_sub(width + 1), y: area.y + 1, width, height };
+    f.render_widget(Clear, rect);
+    f.render_widget(para, rect);
 }
 
 /// A rectangle `width` × `height` centred in `area`, shrunk to fit.
@@ -523,4 +668,50 @@ fn draw_list_picker(f: &mut Frame, t: &Theme, lp: &super::picker::ListPicker) {
     let widget = List::new(items).highlight_style(Style::new().bg(t.bg)).highlight_symbol("▌");
     let mut state = ListState::default().with_selected((!shown.is_empty()).then_some(lp.sel));
     f.render_stateful_widget(widget, list, &mut state);
+}
+
+/// The key guide: the trouble, then its choices or the wait for a key press.
+fn draw_guide(f: &mut Frame, t: &Theme, g: &super::guide::Guide, trouble: &crate::keys::Trouble, left: usize) {
+    let mut lines = vec![
+        Line::from(Span::styled(format!("{}: {}", trouble.at(), trouble.reason()), Style::new().fg(t.text))),
+        Line::from(""),
+    ];
+    match &g.pressing {
+        Some(fix) => {
+            let side = match fix {
+                super::guide::Fix::Rebind(side, _) | super::guide::Fix::Unbind(side, _) => side,
+            };
+            let who = side.who();
+            lines.push(Line::from(Span::styled(format!("press the new key for {who}"), Style::new().fg(t.accent))));
+        }
+        None => {
+            for (i, (label, _)) in super::guide::options(trouble).iter().enumerate() {
+                let (mark, style) = if i == g.sel {
+                    ("▌", Style::new().fg(t.accent).add_modifier(Modifier::BOLD))
+                } else {
+                    (" ", Style::new().fg(t.text))
+                };
+                lines.push(Line::from(Span::styled(format!("{mark}{label}"), style)));
+            }
+        }
+    }
+    if let Some(why) = &g.refused {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(why.clone(), Style::new().fg(t.err))));
+    }
+    let hint = if g.pressing.is_some() { " esc cancels " } else { " ↑/↓ choose · enter fix · esc skip " };
+    let height = lines.len() as u16 + 2;
+    let area = centred(f.area(), 76, height);
+    f.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(t.warn))
+        .title(Line::from(Span::styled(
+            format!(" Fix keys · 1 of {left} "),
+            Style::new().fg(t.warn).add_modifier(Modifier::BOLD),
+        )))
+        .title_bottom(Line::from(Span::styled(hint, Style::new().fg(t.muted))))
+        .padding(Padding::horizontal(1))
+        .style(Style::new().bg(t.surface));
+    f.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }

@@ -33,7 +33,7 @@ impl Screen {
         app.tick();
         let buf = self.term.backend().buffer();
         let text: Vec<String> = (0..buf.area.height).map(|y| common::row_text(buf, y)).collect();
-        text.join("\n").replace(&self.report, "<report>")
+        common::mask_clock(&text.join("\n").replace(&self.report, "<report>"))
     }
 
     /// Draws until the screen contains `text`, for up to five seconds.
@@ -84,8 +84,8 @@ fn a_finished_run_shows_its_exit_code() {
 
     let s = screen.until(&mut app, "✔ 0");
     let s = if s.contains("✘ 3") { s } else { screen.until(&mut app, "✘ 3") };
-    assert!(s.contains("✘ 3         fails"), "{s}");
-    assert!(s.contains("✔ 0         works"), "{s}");
+    assert!(s.contains("✘ 3         hh:mm:ss fails"), "{s}");
+    assert!(s.contains("✔ 0         hh:mm:ss works"), "{s}");
 }
 
 #[test]
@@ -108,6 +108,8 @@ fn keys_go_to_the_run_until_ctrl_g_gives_them_back() {
     ctrl(&mut app, 'g');
     assert!(screen.draw(&mut app).lines().last().unwrap().contains("f takeover"));
     key(&mut app, KeyCode::Char('q'));
+    assert!(screen.draw(&mut app).contains("kill 1 live run and quit? y/n"), "the run is still live");
+    key(&mut app, KeyCode::Char('y'));
     assert!(app.should_quit());
 }
 
@@ -183,7 +185,7 @@ fn x_kills_the_selected_run() {
     key(&mut app, KeyCode::Char('x'));
 
     let s = screen.until(&mut app, "killed");
-    assert!(s.contains("killed      sleeper"), "{s}");
+    assert!(s.contains("killed      hh:mm:ss sleeper"), "{s}");
 }
 
 #[test]

@@ -4,6 +4,7 @@ mod chains;
 mod commands;
 pub mod edit;
 pub mod form;
+mod guide;
 mod home;
 pub mod palette;
 pub mod picker;
@@ -25,14 +26,15 @@ use ratatui::{
     crossterm::{
         self,
         event::{
-            self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode,
-            KeyEvent, KeyEventKind, KeyModifiers,
+            self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+            KeyEvent, KeyEventKind,
         },
         execute,
     },
 };
 
-use crate::config::{Chain, Config};
+use crate::config::{Chain, Config, KeySetting, Needs};
+use crate::keys::Bindings;
 use crate::rpt::{self, Client, Finding, Problem, Version};
 use theme::Theme;
 
@@ -109,12 +111,8 @@ fn keep<T>(r: Result<T, rpt::Error>, errors: &mut Vec<String>) -> Option<T> {
     r.map_err(|e| errors.push(e.to_string())).ok()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Focus {
-    Findings,
-    Problems,
-    Runs,
-}
+/// The focused panel; keys can be scoped to panels too.
+pub use crate::keys::Panel as Focus;
 
 pub struct App {
     pub view: ReportView,
@@ -142,6 +140,35 @@ pub struct App {
     picking: Option<picker::Picking>,
     /// The built-in file list, when open.
     list_picker: Option<picker::ListPicker>,
+    /// `keys:` from the config, as written.
+    key_settings: Vec<KeySetting>,
+    /// The live bindings, from `keys:` and the chains' hotkeys.
+    bindings: Bindings,
+    /// The selected finding or problem is shown full width (`open`).
+    full: bool,
+    /// How far the full view is scrolled, and how far it can go (set as it is drawn).
+    scroll: u16,
+    scroll_max: std::cell::Cell<u16>,
+    /// Help is open, scrolled this far; and how far it can go (set as it is drawn).
+    help: Option<u16>,
+    help_max: std::cell::Cell<u16>,
+    /// Quitting waits for y/n because runs are live.
+    confirm_quit: bool,
+    /// The key guide, when open.
+    guide: Option<guide::Guide>,
+    /// The config file, which the guide's fixes are saved to.
+    config_path: Option<PathBuf>,
+    /// The config file was backed up before the guide's first save.
+    backed_up: bool,
+}
+
+/// The environment variables a run gets for the selection.
+const SELECTION_VARS: [&str; 4] = ["RPT_FINDING_ID", "RPT_FINDING_FILE", "RPT_PROBLEM_FILE", "RPT_PROBLEM_LINE"];
+
+/// The selection: the highlighted row of whichever of Findings and Problems was focused last.
+pub enum Selected<'a> {
+    Finding(&'a Finding),
+    Problem(&'a Problem),
 }
 
 impl App {
@@ -150,12 +177,23 @@ impl App {
         App::with_config(client, Config::default())
     }
 
-    /// As [`App::new`], with chains and settings from `config`; its errors join the startup toast.
+    /// As [`App::with_config`], from the config file at `path` (missing means no config); the
+    /// key guide saves its fixes there.
+    pub fn from_config_file(client: Client, path: &Path) -> App {
+        let mut app = App::with_config(client, crate::config::load_file(path));
+        app.config_path = Some(path.to_path_buf());
+        app
+    }
+
+    /// As [`App::new`], with chains and settings from `config`; its errors join the startup
+    /// toast, and key troubles open the guide.
     pub fn with_config(client: Client, config: Config) -> App {
         let view = ReportView::load(&client, client.report());
-        let errors: Vec<String> = view.errors.iter().chain(&config.errors).cloned().collect();
+        let bindings = Bindings::new(&config.keys, &config.chains);
+        let unfixable = bindings.troubles.iter().filter(|t| t.side().is_none()).map(|t| t.to_string());
+        let errors: Vec<String> = view.errors.iter().chain(&config.errors).cloned().chain(unfixable).collect();
         let toast = (!errors.is_empty()).then(|| errors.join("; "));
-        App {
+        let mut app = App {
             view,
             focus: Focus::Findings,
             last_list: Focus::Findings,
@@ -170,10 +208,67 @@ impl App {
             palette: None,
             recent: vec![],
             editor_env: (std::env::var("VISUAL").ok(), std::env::var("EDITOR").ok()),
+            bindings,
+            key_settings: config.keys,
             chains: config.chains,
             file_picker: config.file_picker,
             picking: None,
             list_picker: None,
+            full: false,
+            scroll: 0,
+            scroll_max: std::cell::Cell::new(0),
+            help: None,
+            help_max: std::cell::Cell::new(0),
+            confirm_quit: false,
+            guide: None,
+            config_path: None,
+            backed_up: false,
+        };
+        app.open_guide();
+        app
+    }
+
+    /// Builds the bindings again from `keys:` and the chains.
+    fn rebind(&mut self) {
+        self.bindings = Bindings::new(&self.key_settings, &self.chains);
+    }
+
+    pub fn selection(&self) -> Option<Selected<'_>> {
+        match self.last_list {
+            Focus::Problems => self.selected_problem().map(Selected::Problem),
+            _ => self.selected_finding().map(Selected::Finding),
+        }
+    }
+
+    /// The selection as environment variables for a run; only the selected kind's are set.
+    fn selection_env(&self) -> Vec<(String, String)> {
+        let abs = |path: &str| self.view.root.join(path).display().to_string();
+        match self.selection() {
+            None => vec![],
+            Some(Selected::Finding(f)) => {
+                vec![("RPT_FINDING_ID".into(), f.id.clone()), ("RPT_FINDING_FILE".into(), abs(&f.path))]
+            }
+            Some(Selected::Problem(p)) => {
+                let mut env = vec![];
+                if !p.path.is_empty() {
+                    env.push(("RPT_PROBLEM_FILE".into(), abs(&p.path)));
+                    if let Some(line) = p.line {
+                        env.push(("RPT_PROBLEM_LINE".into(), line.to_string()));
+                    }
+                }
+                env
+            }
+        }
+    }
+
+    /// Why a chain with these `needs` can't run now, if it can't: `needs a finding`.
+    fn unmet(&self, needs: Option<Needs>) -> Option<&'static str> {
+        let sel = self.selection();
+        match needs? {
+            Needs::Finding if !matches!(sel, Some(Selected::Finding(_))) => Some("needs a finding"),
+            Needs::Problem if !matches!(sel, Some(Selected::Problem(_))) => Some("needs a problem"),
+            Needs::Any if sel.is_none() => Some("needs a finding or problem"),
+            _ => None,
         }
     }
 
@@ -195,6 +290,7 @@ impl App {
     }
 
     fn set_focus(&mut self, focus: Focus) {
+        self.full = false;
         self.focus = focus;
         if focus != Focus::Runs {
             self.last_list = focus;
@@ -207,6 +303,30 @@ impl App {
             Focus::Problems => Focus::Runs,
             Focus::Runs => Focus::Findings,
         })
+    }
+
+    /// `quit`: at once, or after a y/n when runs are live.
+    fn request_quit(&mut self) {
+        if self.any_live() {
+            self.confirm_quit = true;
+        } else {
+            self.quit = true;
+        }
+    }
+
+    /// Keys while help is open: scroll, or close with esc or `help`'s key.
+    fn help_key(&mut self, key: KeyEvent) {
+        use ratatui::crossterm::event::KeyCode;
+        let max = self.help_max.get();
+        let Some(at) = self.help.as_mut() else { return };
+        let closes = self.bindings.keys(crate::keys::Action::Help).contains(&crate::keys::Key::of(&key));
+        match key.code {
+            KeyCode::Esc => self.help = None,
+            _ if closes => self.help = None,
+            KeyCode::Down | KeyCode::Char('j') => *at = (*at + 1).min(max),
+            KeyCode::Up | KeyCode::Char('k') => *at = at.saturating_sub(1),
+            _ => {}
+        }
     }
 
     pub fn should_quit(&self) -> bool {
@@ -222,9 +342,21 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         // Any key dismisses the toast; real toast timing comes with notifications.
         self.toast = None;
+        if self.guide.is_some() {
+            self.guide_key(key);
+            return;
+        }
+        if self.confirm_quit {
+            self.confirm_quit = false;
+            self.quit = key.code == ratatui::crossterm::event::KeyCode::Char('y');
+            return;
+        }
+        if self.help.is_some() {
+            self.help_key(key);
+            return;
+        }
         if self.list_picker.is_some() {
             self.list_picker_key(key);
             return;
@@ -237,27 +369,10 @@ impl App {
         if self.run_key(key) {
             return;
         }
-        if self.focus == Focus::Runs && self.runs_panel_key(key) {
-            return;
-        }
-        match key.code {
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('c') if ctrl => self.quit = true,
-            KeyCode::Char(':') => self.open_palette(),
-            KeyCode::Char('p') if ctrl => self.open_palette(),
-            KeyCode::Char('e') if self.focus != Focus::Runs => self.edit(),
-            KeyCode::Char('v') => {
-                self.run_line(palette::Entry::new(palette::Kind::Rpt, "validate", "").id(), "rpt validate")
-            }
-            KeyCode::Tab => self.focus_next(),
-            KeyCode::Char('1') => self.set_focus(Focus::Findings),
-            KeyCode::Char('2') => self.set_focus(Focus::Problems),
-            KeyCode::Char('3') => self.set_focus(Focus::Runs),
-            KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),
-            KeyCode::Char('g') => self.move_to(0),
-            KeyCode::Char('G') => self.move_to(usize::MAX),
-            _ => {}
+        if let Some(action) = self.bindings.action(&key, self.focus) {
+            self.act(action);
+        } else if let Some(name) = self.bindings.chain(&key).map(String::from) {
+            self.hotkey(&name);
         }
     }
 
@@ -265,18 +380,22 @@ impl App {
         match self.focus {
             Focus::Findings => Some((&mut self.findings_sel, self.view.findings.len())),
             Focus::Problems => Some((&mut self.problems_sel, self.view.problems.len())),
-            Focus::Runs => None,
+            Focus::Runs => Some((&mut self.runs.sel, self.runs.entries.len())),
         }
     }
 
     fn move_by(&mut self, d: isize) {
-        if let Some((sel, len)) = self.list() {
+        if self.full {
+            self.scroll = self.scroll.saturating_add_signed(d as i16).min(self.scroll_max.get());
+        } else if let Some((sel, len)) = self.list() {
             *sel = sel.saturating_add_signed(d).min(len.saturating_sub(1));
         }
     }
 
     fn move_to(&mut self, i: usize) {
-        if let Some((sel, len)) = self.list() {
+        if self.full {
+            self.scroll = if i == 0 { 0 } else { self.scroll_max.get() };
+        } else if let Some((sel, len)) = self.list() {
             *sel = i.min(len.saturating_sub(1));
         }
     }
@@ -298,9 +417,6 @@ impl App {
 const RESET_CHILD_MODES: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?2004l\
 \x1b[?1l\x1b>\x1b[?25h\x1b[0m\x1b[?1004l\x1b[<u\x1b[?2026l\x1b[0 q";
 
-/// The `toggle_takeover` key (ctrl-t) as a raw byte.
-const CTRL_T: u8 = 0x14;
-
 /// While runs are live the screen is redrawn at least this often, so marks like
 /// `◆ quiet 12s` move with no input.
 const LIVE_REDRAW: Duration = Duration::from_millis(500);
@@ -310,11 +426,13 @@ const FRAME: Duration = Duration::from_millis(16);
 
 /// Runs the TUI until the user quits; returns the process exit code.
 pub fn run(report: &Path, rpt_bin: &Path) -> i32 {
-    let config =
-        crate::config::path(std::env::var_os("XDG_CONFIG_HOME").as_deref(), std::env::var_os("HOME").as_deref())
-            .map(|p| crate::config::load_file(&p))
-            .unwrap_or_default();
-    let mut app = App::with_config(Client::new(rpt_bin, report), config);
+    let config_path =
+        crate::config::path(std::env::var_os("XDG_CONFIG_HOME").as_deref(), std::env::var_os("HOME").as_deref());
+    let client = Client::new(rpt_bin, report);
+    let mut app = match config_path {
+        Some(path) => App::from_config_file(client, &path),
+        None => App::new(client),
+    };
     let mut terminal = ratatui::init();
     let result = main_loop(&mut terminal, &mut app);
     app.kill_all();
@@ -385,7 +503,7 @@ fn enter_raw(app: &mut App) -> std::io::Result<()> {
 }
 
 /// One step of raw takeover: crossterm isn't polled; stdin bytes go straight to the run,
-/// except ctrl-t, which leaves takeover.
+/// except `toggle_takeover`, which leaves takeover.
 fn raw_step(app: &mut App) -> std::io::Result<()> {
     let (cols, rows) = crossterm::terminal::size()?;
     let size = crate::run::Size { rows, cols };
@@ -407,10 +525,12 @@ fn raw_step(app: &mut App) -> std::io::Result<()> {
         return Ok(());
     }
     let data = &buf[..n as usize];
+    let toggle = app.bindings.toggle_bytes();
     let Some(run) = app.runs.raw_takeover() else { return Ok(()) };
-    // Every byte goes to the run except ctrl-t, which leaves takeover (the run keeps the keys).
-    let toggled = data.contains(&CTRL_T);
-    run.send(data.iter().copied().filter(|&b| b != CTRL_T).collect::<Vec<u8>>());
+    // Every byte goes to the run except `toggle_takeover`'s, which leave takeover (the run
+    // keeps the keys).
+    let toggled = data.iter().any(|b| toggle.contains(b));
+    run.send(data.iter().copied().filter(|b| !toggle.contains(b)).collect::<Vec<u8>>());
     if toggled {
         app.runs.leave_takeover();
     }
