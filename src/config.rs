@@ -11,7 +11,7 @@ pub const RPT_VERBS: [&str; 10] =
     ["add", "assemble", "delete", "findings", "plugins", "scope", "set", "severities", "validate", "version"];
 
 /// Top-level keys read by later parts of the TUI; accepted here without a complaint.
-const LATER_KEYS: [&str; 2] = ["theme", "notify"];
+const LATER_KEYS: [&str; 1] = ["notify"];
 
 const CHAIN_KEYS: [&str; 9] =
     ["description", "key", "params", "needs", "ephemeral", "display", "takeover", "notify", "steps"];
@@ -130,6 +130,8 @@ pub struct Config {
     pub keys: Vec<KeySetting>,
     /// `history:`.
     pub history: HistorySettings,
+    /// `theme:` as written (a name or a map); checked when the theme is resolved.
+    pub theme: Option<Value>,
     /// One message per problem, for the startup toast.
     pub errors: Vec<String>,
 }
@@ -170,17 +172,22 @@ pub fn load_file(path: &Path) -> Config {
     }
 }
 
+/// YAML text as a value, or the first line of why not. YAML 1.2 booleans: only
+/// `true`/`false`, so a step `yes` or an option `no` stays a word.
+pub fn parse_yaml(text: &str) -> Result<Value, String> {
+    let mut options = serde_saphyr::Options::default();
+    options.strict_booleans = true;
+    serde_saphyr::from_str_with_options(text, options)
+        .map_err(|e| e.to_string().lines().next().unwrap_or_default().to_string())
+}
+
 /// Parses config text, collecting every problem instead of stopping at the first.
 pub fn load(text: &str) -> Config {
     let mut config = Config::default();
-    // YAML 1.2 booleans: only `true`/`false`, so a step `yes` or an option `no` stays a word.
-    let mut options = serde_saphyr::Options::default();
-    options.strict_booleans = true;
-    let root: Value = match serde_saphyr::from_str_with_options(text, options) {
+    let root = match parse_yaml(text) {
         Ok(v) => v,
         Err(e) => {
-            let first = e.to_string().lines().next().unwrap_or_default().to_string();
-            config.errors.push(format!("config.yaml: {first}"));
+            config.errors.push(format!("config.yaml: {e}"));
             return config;
         }
     };
@@ -202,6 +209,7 @@ pub fn load(text: &str) -> Config {
             },
             "keys" => load_keys(value, &mut config),
             "history" => load_history(value, &mut config),
+            "theme" => config.theme = Some(value.clone()).filter(|v| !v.is_null()),
             k if LATER_KEYS.contains(&k) => {}
             k => config.errors.push(format!("config.yaml: unknown key `{k}`")),
         }
@@ -539,11 +547,97 @@ pub fn set_action_keys(text: &str, action: &str, keys: Option<&[String]>) -> Opt
     same(&want, &load(&out)).then_some(out)
 }
 
+/// The text with the theme set to `name`: `theme:`'s value, or its `base:` when it is a map
+/// (the overrides stay); `theme:` is added at the end when missing. Comments are kept. `None`
+/// when the file's shape can't be edited safely; the result is read back and must differ only
+/// there.
+pub fn set_theme(text: &str, name: &str) -> Option<String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    let value = yaml_key(name);
+    match lines.iter().position(|l| indent(l) == 0 && opens_entry(l, "theme")) {
+        None => {
+            if out.last().is_some_and(|l| !l.ends_with('\n')) {
+                out.push("\n".into());
+            }
+            out.push(format!("theme: {value}\n"));
+        }
+        Some(at) if opens_block(lines[at], "theme") => {
+            let (end, inner) = block(&lines, at, 0);
+            let ti = inner?;
+            match (at + 1..end).find(|&i| indent(lines[i]) == ti && opens_entry(lines[i], "base")) {
+                Some(i) => out[i] = replace_value(lines[i], &value)?,
+                None => out.insert(at + 1, format!("{}base: {value}\n", " ".repeat(ti))),
+            }
+        }
+        Some(at) => {
+            let line = lines[at];
+            let rest = line["theme:".len()..].trim_start();
+            out[at] = if rest.starts_with('{') { set_flow_base(line, &value)? } else { replace_value(line, &value)? };
+        }
+    }
+    let out = out.concat();
+    let mut want = load(text);
+    want.theme = Some(match want.theme.take() {
+        Some(Value::Object(mut m)) => {
+            m.insert("base".into(), Value::String(name.into()));
+            Value::Object(m)
+        }
+        _ => Value::String(name.into()),
+    });
+    let got = load(&out);
+    // `base:` added to a map goes first, so compare its entries, not their order.
+    let same_theme = |a: &Option<Value>, b: &Option<Value>| match (a, b) {
+        (Some(Value::Object(x)), Some(Value::Object(y))) => {
+            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k) == Some(v))
+        }
+        _ => a == b,
+    };
+    (same_theme(&want.theme, &got.theme) && same(&Config { theme: None, ..want }, &Config { theme: None, ..got }))
+        .then_some(out)
+}
+
+/// A `theme: { … }` line with its `base:` set to `value`, added first when missing. `None`
+/// when `base:` shows up more than once (a nested map's, say), so which one is unclear.
+fn set_flow_base(line: &str, value: &str) -> Option<String> {
+    match line.matches("base:").count() {
+        0 => {
+            let open = line.find('{')? + 1;
+            Some(format!("{}base: {value},{}", &line[..open], &line[open..]).replacen("{base:", "{ base:", 1))
+        }
+        1 => {
+            let start = line.find("base:")? + "base:".len();
+            let tail = &line[start..];
+            let len = tail.find([',', '}']).unwrap_or(tail.len());
+            Some(format!("{}base: {value}{}", &line[..start - "base:".len()], &tail[len..]))
+        }
+        _ => None,
+    }
+}
+
+/// `key: value  # comment` with the value replaced, keeping the key, spacing and comment.
+fn replace_value(line: &str, value: &str) -> Option<String> {
+    let colon = line.find(':')?;
+    let after = &line[colon + 1..];
+    let lead = after.len() - after.trim_start().len();
+    let body = after.trim_start();
+    // The value runs to a ` #` comment or the line's end; trailing spaces before a comment stay.
+    let end = body.find(" #").unwrap_or_else(|| body.trim_end_matches(['\n', '\r']).len());
+    let old = &body[..end];
+    let kept = &old[old.trim_end().len()..];
+    Some(format!("{}{}{value}{kept}{}", &line[..colon + 1], &after[..lead], &body[end..]))
+}
+
 /// `line` is the entry `name:` (with any value).
 fn opens_entry(line: &str, name: &str) -> bool {
     line.trim_start().strip_prefix(name).is_some_and(|r| r.starts_with(':'))
 }
 
 fn same(a: &Config, b: &Config) -> bool {
-    a.chains == b.chains && a.keys == b.keys && a.file_picker == b.file_picker && a.errors == b.errors
+    a.chains == b.chains
+        && a.keys == b.keys
+        && a.file_picker == b.file_picker
+        && a.history == b.history
+        && a.theme == b.theme
+        && a.errors == b.errors
 }

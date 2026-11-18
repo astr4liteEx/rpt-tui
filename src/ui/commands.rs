@@ -306,6 +306,7 @@ impl App {
             Action::KillOrDelete => self.kill_or_delete(),
             Action::ClearHistory => self.ask_clear_history(),
             Action::ExportTranscript => self.ask_export(),
+            Action::Theme => self.open_theme_picker(),
             _ => {}
         }
     }

@@ -12,6 +12,7 @@ pub mod picker;
 mod runs;
 mod term;
 pub mod theme;
+mod theme_picker;
 mod time;
 
 use runs::Runs;
@@ -125,6 +126,12 @@ pub struct App {
     problems_sel: usize,
     toast: Option<String>,
     theme: Theme,
+    /// `theme:` as written, which the picker previews and rewrites.
+    theme_setting: Option<serde_json::Value>,
+    /// The terminal shows true colour (`COLORTERM`).
+    truecolor: bool,
+    /// The theme picker, when open.
+    theme_picker: Option<theme_picker::ThemePicker>,
     runs: Runs,
     quit: bool,
     client: Client,
@@ -205,20 +212,27 @@ impl App {
 
     /// As [`App::with_config`], from the config file at `path` (missing means no config); the
     /// key guide saves its fixes there. Run history is kept only where `history.dir` says.
+    /// Theme files are read from `themes/` beside it.
     pub fn from_config_file(client: Client, path: &Path) -> App {
-        let mut app = App::with_config(client, crate::config::load_file(path));
-        app.config_path = Some(path.to_path_buf());
-        app
+        App::open(client, crate::config::load_file(path), Some(path.to_path_buf()), true)
     }
 
     /// As [`App::new`], with chains and settings from `config`; its errors join the startup
     /// toast, and key troubles open the guide.
     pub fn with_config(client: Client, config: Config) -> App {
+        App::open(client, config, None, true)
+    }
+
+    /// The app on `config`, read from `config_path` if from a file; hex colours are drawn as
+    /// the nearest of the 256 without `truecolor`.
+    fn open(client: Client, config: Config, config_path: Option<PathBuf>, truecolor: bool) -> App {
         let view = ReportView::load(&client, client.report());
         let bindings = Bindings::new(&config.keys, &config.chains);
         let unfixable = bindings.troubles.iter().filter(|t| t.side().is_none()).map(|t| t.to_string());
-        let errors: Vec<String> = view.errors.iter().chain(&config.errors).cloned().chain(unfixable).collect();
-        let mut errors = errors;
+        let mut errors: Vec<String> = view.errors.iter().chain(&config.errors).cloned().chain(unfixable).collect();
+        let config_dir = config_path.as_deref().and_then(Path::parent);
+        let (theme, theme_errors) = theme::resolve(config.theme.as_ref(), config_dir, truecolor);
+        errors.extend(theme_errors);
         let root = std::path::absolute(client.report()).unwrap_or_else(|_| client.report().to_path_buf());
         let limits = config.history.limits;
         let history = config.history.dir.as_deref().and_then(|dir| {
@@ -235,7 +249,10 @@ impl App {
             findings_sel: 0,
             problems_sel: 0,
             toast,
-            theme: Theme::CHARM,
+            theme,
+            theme_setting: config.theme,
+            truecolor,
+            theme_picker: None,
             runs: Runs::default(),
             quit: false,
             plugins: commands::Plugins::load(&client),
@@ -256,7 +273,7 @@ impl App {
             help_max: std::cell::Cell::new(0),
             confirm: None,
             guide: None,
-            config_path: None,
+            config_path,
             backed_up: false,
             history,
             history_limits: limits,
@@ -353,6 +370,29 @@ impl App {
         }
     }
 
+    /// Edits the config file with `edit` (the new text, or none when it can't be done safely),
+    /// backing it up before the first write. Otherwise the change lasts this session and a toast
+    /// says how to make it by hand (`by_hand`: "under keys:, write …").
+    fn edit_config(&mut self, edit: impl FnOnce(&str) -> Option<String>, by_hand: &str) {
+        let Some(path) = self.config_path.clone() else { return };
+        // A file that can't be read can't be edited safely; never write over it.
+        let written = std::fs::read_to_string(&path).ok().and_then(|t| edit(&t)).map(|new| {
+            if !self.backed_up {
+                std::fs::copy(&path, path.with_extension("yaml.bak"))?;
+                self.backed_up = true;
+            }
+            std::fs::write(&path, new)
+        });
+        match written {
+            Some(Ok(())) => {}
+            Some(Err(e)) => self.toast = Some(format!("could not save config.yaml ({e}); to keep this, {by_hand}")),
+            None => {
+                self.toast =
+                    Some(format!("kept for this session (config.yaml can't be edited safely); to keep it, {by_hand}"))
+            }
+        }
+    }
+
     /// Adds `msg` to the toast.
     fn add_toast(&mut self, msg: String) {
         self.toast = Some(match self.toast.take() {
@@ -432,6 +472,10 @@ impl App {
         }
         if self.help.is_some() {
             self.help_key(key);
+            return;
+        }
+        if self.theme_picker.is_some() {
+            self.theme_picker_key(key);
             return;
         }
         if self.list_picker.is_some() {
@@ -519,8 +563,8 @@ pub fn run(report: &Path, rpt_bin: &Path) -> i32 {
     if config.history.dir.is_none() {
         config.errors.push("run history is off: neither HOME nor XDG_STATE_HOME is set".into());
     }
-    let mut app = App::with_config(client, config);
-    app.config_path = config_path;
+    let truecolor = std::env::var("COLORTERM").is_ok_and(|c| matches!(c.as_str(), "truecolor" | "24bit"));
+    let mut app = App::open(client, config, config_path, truecolor);
     let mut terminal = ratatui::init();
     let result = main_loop(&mut terminal, &mut app);
     app.kill_all();

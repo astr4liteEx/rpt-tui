@@ -222,33 +222,14 @@ impl App {
         (chains, settings, edit)
     }
 
-    /// Saves a fix to the config file, backing it up first; when the file can't be edited
-    /// safely, the fix lasts this session and a toast says how to make it by hand.
+    /// Saves a fix to the config file.
     fn save(&mut self, edit: &Edit) {
-        let Some(path) = self.config_path.clone() else { return };
-        // A file that can't be read can't be edited safely; never write over it.
-        let edited = std::fs::read_to_string(&path).ok().and_then(|text| match edit {
-            Edit::ChainKey(n, k) => config::set_chain_key(&text, n, k.as_deref()),
-            Edit::ActionKeys(a, k) => config::set_action_keys(&text, a, k.as_deref()),
-        });
-        let written = edited.map(|new| {
-            if !self.backed_up {
-                std::fs::copy(&path, path.with_extension("yaml.bak"))?;
-                self.backed_up = true;
-            }
-            std::fs::write(&path, new)
-        });
-        match written {
-            Some(Ok(())) => {}
-            Some(Err(e)) => {
-                self.toast = Some(format!("could not save config.yaml ({e}); to keep this, {}", edit.by_hand()))
-            }
-            None => {
-                self.toast = Some(format!(
-                    "fixed for this session (config.yaml can't be edited safely); to keep it, {}",
-                    edit.by_hand()
-                ))
-            }
-        }
+        self.edit_config(
+            |text| match edit {
+                Edit::ChainKey(n, k) => config::set_chain_key(text, n, k.as_deref()),
+                Edit::ActionKeys(a, k) => config::set_action_keys(text, a, k.as_deref()),
+            },
+            &edit.by_hand(),
+        );
     }
 }

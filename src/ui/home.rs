@@ -15,7 +15,7 @@ use crate::rpt::{Finding, Problem};
 
 /// Draws the home screen; returns the inside of the right side, where a run's pane goes.
 pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
-    let t = app.theme;
+    let t = &app.theme;
     f.render_widget(Block::new().style(Style::new().bg(t.bg).fg(t.text)), f.area());
 
     let [header, body, footer] =
@@ -54,13 +54,16 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
         draw_palette(f, app, state);
     }
     if let Some(lp) = &app.list_picker {
-        draw_list_picker(f, &t, lp);
+        draw_list_picker(f, t, lp);
     }
     if let Some(at) = app.help {
         draw_help(f, app, at);
     }
+    if let Some(p) = &app.theme_picker {
+        draw_theme_picker(f, app, p);
+    }
     if let (Some(g), Some((trouble, left))) = (&app.guide, app.guide_trouble()) {
-        draw_guide(f, &t, g, &trouble, left);
+        draw_guide(f, t, g, &trouble, left);
     }
     if let Some(c) = &app.confirm {
         let msg = app.question(c);
@@ -73,7 +76,7 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
         f.render_widget(Paragraph::new(msg).block(block), rect);
     }
     if let Some(msg) = &app.toast {
-        draw_toast(f, &t, msg);
+        draw_toast(f, t, msg);
     }
     // Full width, the right side is no run's pane: live runs keep the pane's size.
     (!full).then(|| Block::bordered().inner(right))
@@ -130,9 +133,26 @@ fn hints(app: &App, full: bool) -> String {
     format!(" {}", parts.into_iter().flatten().collect::<Vec<_>>().join(" · "))
 }
 
+/// The theme picker: the themes, the previewed one highlighted.
+fn draw_theme_picker(f: &mut Frame, app: &App, p: &super::theme_picker::ThemePicker) {
+    let t = &app.theme;
+    let rect = centred(f.area(), 44, p.names.len() as u16 + 2);
+    f.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(t.border_focus))
+        .title(Line::from(Span::styled(" theme ", Style::new().fg(t.accent).add_modifier(Modifier::BOLD))))
+        .title_bottom(Line::from(Span::styled(" j/k preview · enter keep · esc back ", Style::new().fg(t.muted))))
+        .padding(Padding::horizontal(1))
+        .style(Style::new().bg(t.surface).fg(t.text));
+    let items: Vec<ListItem> = p.names.iter().map(|n| ListItem::new(n.clone())).collect();
+    let list = List::new(items).block(block).highlight_style(Style::new().bg(t.bg)).highlight_symbol("▌");
+    f.render_stateful_widget(list, rect, &mut ListState::default().with_selected(Some(p.sel)));
+}
+
 /// Help: the live bindings by context, then chain hotkeys; `*` marks a changed binding.
 fn draw_help(f: &mut Frame, app: &App, at: u16) {
-    let t = app.theme;
+    let t = &app.theme;
     let b = &app.bindings;
     let row = |mark: &str, name: &str, keys: String, what: &str| {
         Line::from(vec![
@@ -194,8 +214,8 @@ fn draw_help(f: &mut Frame, app: &App, at: u16) {
 
 /// A finding or problem's text in its panel; full width, it scrolls.
 fn draw_view(f: &mut Frame, area: Rect, app: &App, lines: Vec<Line>, title: &str) {
-    let t = app.theme;
-    let mut para = Paragraph::new(Text::from(lines)).block(panel(&t, title, app.full)).wrap(Wrap { trim: false });
+    let t = &app.theme;
+    let mut para = Paragraph::new(Text::from(lines)).block(panel(t, title, app.full)).wrap(Wrap { trim: false });
     if app.full {
         let max = (para.line_count(area.width) as u16).saturating_sub(area.height);
         app.scroll_max.set(max);
@@ -206,9 +226,9 @@ fn draw_view(f: &mut Frame, area: Rect, app: &App, lines: Vec<Line>, title: &str
 
 /// The selected run's screen on the right side, bordered in `border_run` while it has the keys.
 fn draw_pane(f: &mut Frame, area: Rect, app: &App) {
-    let t = app.theme;
+    let t = &app.theme;
     let Some(entry) = app.runs.selected() else {
-        return draw_placeholder(f, area, &t, "Run", "No run selected.");
+        return draw_placeholder(f, area, t, "Run", "No run selected.");
     };
     let has_keys = app.runs.key_target() == Some(app.runs.sel);
     let block = run_block(app, entry, if has_keys { t.border_run } else { t.border });
@@ -223,7 +243,7 @@ fn draw_pane(f: &mut Frame, area: Rect, app: &App) {
 
 /// A run's border: its label, its mark, and when it started, how long it took and how long ago.
 fn run_block<'a>(app: &App, entry: &super::runs::RunEntry, colour: ratatui::style::Color) -> Block<'a> {
-    let t = app.theme;
+    let t = &app.theme;
     let now = std::time::SystemTime::now();
     let mut about = format!("started {}", super::time::when(entry.started, now));
     if let Some((_, took)) = &entry.ended {
@@ -257,7 +277,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &App) {
 
 /// A run's screen in `area`, with the cursor shown when the run has the keys.
 fn draw_screen(f: &mut Frame, area: Rect, app: &App, screen: &vt100::Screen, has_keys: bool) {
-    let t = app.theme;
+    let t = &app.theme;
     f.render_widget(TermView { screen, fg: t.text, bg: t.bg }, area);
     let (row, col) = screen.cursor_position();
     let cursor = (!screen.hide_cursor()).then_some((area.x + col, area.y + row));
@@ -268,7 +288,7 @@ fn draw_screen(f: &mut Frame, area: Rect, app: &App, screen: &vt100::Screen, has
 
 /// Emulated takeover: the run's screen full-size, with one status line at the bottom.
 pub fn draw_takeover(f: &mut Frame, app: &App, i: usize) {
-    let t = app.theme;
+    let t = &app.theme;
     let Some(entry) = app.runs.entries.get(i) else { return };
     let [screen, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
     f.render_widget(Block::new().style(Style::new().bg(t.bg).fg(t.text)), f.area());
@@ -302,7 +322,7 @@ fn panel<'a>(t: &Theme, title: &'a str, focused: bool) -> Block<'a> {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    let t = app.theme;
+    let t = &app.theme;
     let errors = app.view.problems.iter().filter(|p| p.is_error()).count();
     let warnings = app.view.problems.len() - errors;
     let mut spans = vec![
@@ -325,7 +345,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_findings(f: &mut Frame, area: Rect, app: &App) {
-    let t = app.theme;
+    let t = &app.theme;
     let width = app.view.findings.iter().map(|x| x.severity.chars().count()).max().unwrap_or(0);
     let items: Vec<ListItem> = app
         .view
@@ -346,14 +366,14 @@ fn draw_findings(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|(s, n)| Span::styled(format!(" {n} {s} "), Style::new().fg(t.severity(s, app.view.severity_position(s)))))
         .collect();
-    let block = panel(&t, "1 Findings", app.focus == Focus::Findings).title_bottom(Line::from(counts));
+    let block = panel(t, "1 Findings", app.focus == Focus::Findings).title_bottom(Line::from(counts));
     let list = List::new(items).block(block).highlight_style(Style::new().bg(t.surface)).highlight_symbol("▌");
     let mut state = ListState::default().with_selected((!app.view.findings.is_empty()).then_some(app.findings_sel));
     f.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_problems(f: &mut Frame, area: Rect, app: &App) {
-    let t = app.theme;
+    let t = &app.theme;
     // Inside: borders (2), padding (2) and the highlight mark (1).
     let inner = (area.width as usize).saturating_sub(5);
     let items: Vec<ListItem> = app
@@ -361,7 +381,7 @@ fn draw_problems(f: &mut Frame, area: Rect, app: &App) {
         .problems
         .iter()
         .map(|p| {
-            let (mark, colour) = level_mark(&t, p);
+            let (mark, colour) = level_mark(t, p);
             let loc = location(p);
             // The file:line always shows; the message gives way.
             let room = inner.saturating_sub(mark.chars().count() + 1 + 2 + loc.chars().count());
@@ -372,7 +392,7 @@ fn draw_problems(f: &mut Frame, area: Rect, app: &App) {
             ]))
         })
         .collect();
-    let block = panel(&t, "2 Problems", app.focus == Focus::Problems);
+    let block = panel(t, "2 Problems", app.focus == Focus::Problems);
     if items.is_empty() {
         f.render_widget(Paragraph::new(Span::styled("No problems.", Style::new().fg(t.ok))).block(block), area);
         return;
@@ -405,8 +425,8 @@ fn location(p: &Problem) -> String {
 }
 
 fn draw_runs(f: &mut Frame, area: Rect, app: &App) {
-    let t = app.theme;
-    let block = panel(&t, "3 Runs", app.focus == Focus::Runs);
+    let t = &app.theme;
+    let block = panel(t, "3 Runs", app.focus == Focus::Runs);
     if app.runs.entries.is_empty() {
         f.render_widget(Paragraph::new(Span::styled("No runs yet.", Style::new().fg(t.muted))).block(block), area);
         return;
@@ -436,7 +456,7 @@ fn draw_runs(f: &mut Frame, area: Rect, app: &App) {
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("{:<mark_width$}", mark.text()),
-                    Style::new().fg(mark.colour(&t)).add_modifier(dim),
+                    Style::new().fg(mark.colour(t)).add_modifier(dim),
                 ),
                 Span::styled(when, Style::new().fg(t.muted).add_modifier(dim)),
                 Span::styled(format!("{label:<room$}"), label_style.add_modifier(dim)),
@@ -480,9 +500,9 @@ fn section_title(key: &str) -> String {
 }
 
 fn draw_finding_preview(f: &mut Frame, area: Rect, app: &App) {
-    let t = app.theme;
+    let t = &app.theme;
     let Some(x) = app.selected_finding() else {
-        return draw_placeholder(f, area, &t, "Preview", "No findings yet.");
+        return draw_placeholder(f, area, t, "Preview", "No findings yet.");
     };
     let sev = t.severity(&x.severity, app.view.severity_position(&x.severity));
     let mut meta = vec![Span::styled(format!("● {}", x.severity), Style::new().fg(sev))];
@@ -510,9 +530,9 @@ fn draw_finding_preview(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_problem(f: &mut Frame, area: Rect, app: &App) {
-    let t = app.theme;
+    let t = &app.theme;
     let Some(p) = app.selected_problem() else {
-        return draw_placeholder(f, area, &t, "Problem", "No problems.");
+        return draw_placeholder(f, area, t, "Problem", "No problems.");
     };
     let level = if p.is_error() {
         Span::styled("✘ error", Style::new().fg(t.err))
@@ -560,7 +580,7 @@ fn centred(area: Rect, width: u16, height: u16) -> Rect {
 
 /// The command palette: a query line over the ranked list, or a chosen entry's argument line.
 fn draw_palette(f: &mut Frame, app: &App, state: &palette::State) {
-    let t = app.theme;
+    let t = &app.theme;
     let block = |title: String| {
         Block::bordered()
             .border_type(BorderType::Rounded)
@@ -570,7 +590,7 @@ fn draw_palette(f: &mut Frame, app: &App, state: &palette::State) {
             .padding(Padding::horizontal(1))
     };
     if let Some(form) = &state.form {
-        return draw_form(f, &t, form, block(format!(" chain {} ", form.chain.name)));
+        return draw_form(f, t, form, block(format!(" chain {} ", form.chain.name)));
     }
     if let Some(line) = &state.export {
         let rect = centred(f.area(), 84, 5);
@@ -639,7 +659,7 @@ fn draw_palette(f: &mut Frame, app: &App, state: &palette::State) {
                 ListItem::new(Span::styled(h.to_string(), Style::new().fg(t.accent).add_modifier(Modifier::BOLD)))
             }
             palette::Row::Loading => ListItem::new(Span::styled("  loading plugins…", Style::new().fg(t.muted))),
-            palette::Row::Entry(i) => ListItem::new(entry_line(&t, &entries[*i], width)),
+            palette::Row::Entry(i) => ListItem::new(entry_line(t, &entries[*i], width)),
         })
         .collect();
     let at = selected.and_then(|s| rows.iter().position(|r| *r == palette::Row::Entry(s)));

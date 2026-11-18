@@ -305,3 +305,38 @@ fn history_limits_are_positive_whole_numbers_and_keys_are_known() {
     }
     assert_eq!(config::load("history: [a]\n").errors, ["config.yaml: history: not a map of settings"]);
 }
+
+#[test]
+fn a_named_theme_is_rewritten_in_place_keeping_comments() {
+    let text = "# my config\ntheme: charm   # the default\nkeys: { quit: Q }\n";
+
+    let out = config::set_theme(text, "light").unwrap();
+
+    assert_eq!(out, "# my config\ntheme: light   # the default\nkeys: { quit: Q }\n");
+}
+
+#[test]
+fn a_theme_map_has_only_its_base_changed() {
+    let block = "theme:\n  # mine\n  base: charm  # was\n  colors:\n    accent: red\n";
+    assert_eq!(
+        config::set_theme(block, "night").unwrap(),
+        "theme:\n  # mine\n  base: night  # was\n  colors:\n    accent: red\n"
+    );
+    let no_base = "theme:\n  colors:\n    accent: red\n";
+    assert_eq!(config::set_theme(no_base, "light").unwrap(), "theme:\n  base: light\n  colors:\n    accent: red\n");
+    let flow = "theme: { base: terminal, colors: { accent: red } }\n";
+    assert_eq!(config::set_theme(flow, "light").unwrap(), "theme: { base: light, colors: { accent: red } }\n");
+    let flow = "theme: { colors: { accent: red } }  # mine\n";
+    assert_eq!(config::set_theme(flow, "light").unwrap(), "theme: { base: light, colors: { accent: red } }  # mine\n");
+}
+
+#[test]
+fn a_config_without_a_theme_gets_one_at_the_end() {
+    assert_eq!(config::set_theme("keys: { quit: Q }", "light").unwrap(), "keys: { quit: Q }\ntheme: light\n");
+    assert_eq!(config::set_theme("", "light").unwrap(), "theme: light\n");
+}
+
+#[test]
+fn a_theme_line_that_cannot_be_edited_safely_is_left_alone() {
+    assert_eq!(config::set_theme("theme: >\n  charm\n", "light"), None);
+}

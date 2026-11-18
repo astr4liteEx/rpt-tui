@@ -160,9 +160,19 @@ impl AppScreen {
 
     /// As [`AppScreen::new`], started from `config` written to a `config.yaml` it may edit.
     pub fn from_file(config: &str) -> AppScreen {
+        AppScreen::from_files(config, &[])
+    }
+
+    /// As [`AppScreen::from_file`], with more files (`themes/night.yaml`) beside it.
+    pub fn from_files(config: &str, files: &[(&str, &str)]) -> AppScreen {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("config.yaml");
         std::fs::write(&file, config).unwrap();
+        for (name, text) in files {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
         AppScreen::start(tempfile::tempdir().unwrap(), Some(dir), |client| {
             rpt_tui::ui::App::from_config_file(client, &file)
         })

@@ -194,13 +194,6 @@ impl Mark {
     }
 }
 
-fn rgb(c: Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
-    match c {
-        Color::Rgb(r, g, b) => (r, g, b),
-        _ => fallback,
-    }
-}
-
 impl Runs {
     pub fn pane_size(&self) -> Size {
         Size { rows: self.pane.height, cols: self.pane.width }
@@ -318,8 +311,8 @@ impl App {
         launch.env.extend(self.selection_env());
         launch.env.push(("RPT_REPORT_DIR".into(), self.view.root.display().to_string()));
         launch.env.push(("PATH".into(), self.client.path().to_string_lossy().into_owned()));
-        let defaults = Colors::default();
-        launch.colors = Colors { fg: rgb(self.theme.text, defaults.fg), bg: rgb(self.theme.bg, defaults.bg) };
+        let (fg, bg) = self.theme.query_colours();
+        launch.colors = Colors { fg, bg };
         launch.transcript_cap = self.history_limits.max_transcript;
         let style = match display {
             Display::Takeover(style) => style,

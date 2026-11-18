@@ -231,7 +231,7 @@ actions! {
     Takeover "takeover" Scope::Panels(RUNS), ["f"], true, "Take over the selected run";
     LeaveRun "leave_run" Scope::Run, ["ctrl-g"], true, "Give the keys back to the TUI";
     ToggleTakeover "toggle_takeover" Scope::Run, ["ctrl-t"], true, "Switch between pane and takeover";
-    Theme "theme" Scope::Global, [], false, "Switch the theme";
+    Theme "theme" Scope::Global, [], true, "Switch the theme";
     ReloadConfig "reload-config" Scope::Global, [], false, "Read the config again";
     ClearHistory "clear-history" Scope::Global, [], true, "Empty this report's run history";
     ExportTranscript "export-transcript" Scope::Global, [], true, "Save the selected run's transcript";

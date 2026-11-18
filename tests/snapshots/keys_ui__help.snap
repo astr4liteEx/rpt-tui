@@ -13,16 +13,16 @@ expression: out
 │       │   focus_problems     2                Focus Problems                             │       │
 │       │   focus_runs         3                Focus Runs                                 │       │
 │       │  *validate           V                Run rpt validate                           │       │
+│       │   theme              unbound          Switch the theme                           │       │
 │       │   clear-history      unbound          Empty this report's run history            │       │
 │       │   export-transcript  unbound          Save the selected run's transcript         │       │
-│       │   fix-keys           unbound          Fix key clashes in the config              │       │
-╰ 1 high│                                                                                  │       │
-╭ 2 Prob│ lists                                                                            │       │
-│ ▌✘ err│   down               j, down          Move down                                  │       │
-╰───────│   up                 k, up            Move up                                    │       │
-╭ 3 Runs│   top                g                Go to the top                              │       │
-│ No run│   bottom             G                Go to the bottom                           │       │
+╰ 1 high│   fix-keys           unbound          Fix key clashes in the config              │       │
+╭ 2 Prob│                                                                                  │       │
+│ ▌✘ err│ lists                                                                            │       │
+╰───────│   down               j, down          Move down                                  │       │
+╭ 3 Runs│   up                 k, up            Move up                                    │       │
+│ No run│   top                g                Go to the top                              │       │
+│       │   bottom             G                Go to the bottom                           │       │
 │       │   open               enter            Full view, or the keys to a run            │       │
-│       │   back               esc              Leave the full view, or Runs               │       │
 ╰───────╰ * changed from the default · j/k scroll · esc close ─────────────────────────────╯───────╯
  : commands · e edit · enter open · V validate · j/k move · tab focus · ? help · q quit
