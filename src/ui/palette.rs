@@ -47,11 +47,22 @@ pub struct Entry {
     pub disabled: Option<String>,
     /// Takes a free-text argument line, pre-filled from this usage.
     pub args: Option<String>,
+    /// The TUI's own `edit`, rather than a chain from the config.
+    pub builtin: bool,
 }
 
 impl Entry {
     pub fn new(kind: Kind, name: &str, summary: &str) -> Entry {
-        Entry { kind, name: name.into(), summary: summary.into(), io: None, key: None, disabled: None, args: None }
+        Entry {
+            kind,
+            name: name.into(),
+            summary: summary.into(),
+            io: None,
+            key: None,
+            disabled: None,
+            args: None,
+            builtin: false,
+        }
     }
 
     /// How run history and recents name the command: `plugin parse-nuclei`.
@@ -148,6 +159,8 @@ pub struct State {
     /// The highlighted entry, counted among entry rows only.
     pub sel: usize,
     pub args: Option<ArgLine>,
+    /// A chain's parameter form.
+    pub form: Option<super::form::Form>,
 }
 
 /// The free-text argument line of a plugin or `set`/`delete`.

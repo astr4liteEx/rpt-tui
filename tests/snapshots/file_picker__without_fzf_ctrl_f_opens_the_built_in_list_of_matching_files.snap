@@ -1,0 +1,28 @@
+---
+source: tests/file_picker.rs
+expression: out
+---
+ rpt-tui   <report>   3 findings  1 error  0 warnings
+╭ 1 Findings ────────────────────────────╮╭ Preview ───────────────────────────────────────────────╮
+│ ▌F-003 ● high   SQL injection in login ││ F-003  SQL injection in login                          │
+│  F-001 ● medium Reflected XSS in searc ││ ● high   scope S-12, S-14   evidence 1                 │
+│  F-002 ● info   Weak TLS configuration ││ findings/sqli-login.md                                 │
+│                                        ││                                                        │
+│                                        ││ ## Description                                         │
+│                                        ││ The `user` parameter of `/login` is concatenated into  │
+│       ╭ chain╭ pick a file ───────────────────────────────────────────────────────╮──────╮       │
+│       │      │ >                                                                  │      │       │
+│       │ ▌SCAN│                                                                    │      │       │
+│       │      │ ▌findings/sqli-login.md                                            │      │       │
+│       │ tab n│  findings/tls-weak.md                                              │      │       │
+│       │      │  findings/xss-search.md                                            │      │       │
+╰ 1 high╰──────│                                                                    │──────╯       │
+╭ 2 Problems ──╰ enter pick (or the typed path) · esc cancel ───────────────────────╯              │
+│ ▌✘ error S-99…  findings/tls-weak.md:5 ││ curl -d "user=' OR 1=1--" https://10.0.0.5/login       │
+╰────────────────────────────────────────╯│ ```                                                    │
+╭ 3 Runs ────────────────────────────────╮│                                                        │
+│ No runs yet.                           ││ ![login bypass](evidence/F-003-login.png)              │
+│                                        ││                                                        │
+│                                        ││                                                        │
+╰────────────────────────────────────────╯╰────────────────────────────────────────────────────────╯
+ : commands · e edit · v validate · j/k move · tab/1-3 focus · q quit

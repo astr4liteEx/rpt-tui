@@ -8,7 +8,8 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 
-use super::{App, Focus, Mark, palette, term::TermView, theme::Theme};
+use super::{App, Focus, Mark, form::Form, palette, term::TermView, theme::Theme};
+use crate::config::ParamKind;
 use crate::rpt::{Finding, Problem};
 
 /// Draws the home screen; returns the inside of the right side, where a run's pane goes.
@@ -48,8 +49,11 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
     };
     f.render_widget(Line::from(Span::styled(hints, Style::new().fg(t.muted))), footer);
 
-    if let Some(state) = &app.palette {
+    if let Some(state) = app.palette.as_ref().filter(|_| app.picking.is_none()) {
         draw_palette(f, app, state);
+    }
+    if let Some(lp) = &app.list_picker {
+        draw_list_picker(f, &t, lp);
     }
     if let Some(msg) = &app.toast {
         draw_toast(f, &t, msg);
@@ -70,8 +74,7 @@ fn draw_pane(f: &mut Frame, area: Rect, app: &App) {
         .border_style(Style::new().fg(colour))
         .title(Line::from(Span::styled(format!(" {} ", entry.label), Style::new().fg(t.text))))
         .title(
-            Line::from(Span::styled(format!(" {} ", Mark::of(&entry.run).text()), Style::new().fg(t.muted)))
-                .right_aligned(),
+            Line::from(Span::styled(format!(" {} ", Mark::of(entry).text()), Style::new().fg(t.muted))).right_aligned(),
         );
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -100,7 +103,7 @@ pub fn draw_takeover(f: &mut Frame, app: &App, i: usize) {
     draw_screen(f, screen, app, &entry.run, true);
     let line = Line::from(vec![
         Span::styled(format!(" {} ", entry.label), Style::new().fg(t.bg).bg(t.border_run).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" {} ", Mark::of(&entry.run).text()), Style::new().fg(t.muted)),
+        Span::styled(format!(" {} ", Mark::of(entry).text()), Style::new().fg(t.muted)),
         Span::styled(" ctrl-t pane · ctrl-g leave", Style::new().fg(t.muted)),
     ]);
     f.render_widget(line.style(Style::new().bg(t.surface)), status);
@@ -236,7 +239,7 @@ fn draw_runs(f: &mut Frame, area: Rect, app: &App) {
         .entries
         .iter()
         .map(|e| {
-            let mark = Mark::of(&e.run);
+            let mark = Mark::of(e);
             let colour = mark.colour(&t);
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:<12}", mark.text()), Style::new().fg(colour)),
@@ -361,6 +364,9 @@ fn draw_palette(f: &mut Frame, app: &App, state: &palette::State) {
             .style(Style::new().bg(t.surface).fg(t.text))
             .padding(Padding::horizontal(1))
     };
+    if let Some(form) = &state.form {
+        return draw_form(f, &t, form, block(format!(" chain {} ", form.chain.name)));
+    }
     if let Some(args) = &state.args {
         let rect = centred(f.area(), 84, 6);
         f.render_widget(Clear, rect);
@@ -441,4 +447,80 @@ fn entry_line<'a>(t: &Theme, e: &palette::Entry, width: usize) -> Line<'a> {
         Span::raw(" ".repeat(pad + 1)),
         Span::styled(key, fg(t.warn)),
     ])
+}
+
+/// A chain's parameter form: one row per parameter (name, kind, value), then hints.
+fn draw_form(f: &mut Frame, t: &Theme, form: &Form, block: Block) {
+    let n = form.values.len() as u16;
+    let rect = centred(f.area(), 84, n + 6);
+    f.render_widget(Clear, rect);
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let width = form.chain.params.iter().map(|p| p.name.chars().count() + 1).max().unwrap_or(0);
+    let mut lines = vec![Line::from(Span::styled(form.chain.description.clone(), Style::new().fg(t.muted)))];
+    let mut cursor = None;
+    for (i, (p, v)) in form.chain.params.iter().zip(&form.values).enumerate() {
+        let here = i == form.field;
+        // A flag always has a value, so it never shows as required.
+        let required = p.required() && p.kind != ParamKind::Flag;
+        let name = format!("{}{}", p.name, if required { "*" } else { "" });
+        let (kind, shown) = match &p.kind {
+            ParamKind::Text => ("text", v.clone()),
+            ParamKind::File { .. } => ("file", v.clone()),
+            ParamKind::Choice { .. } => ("choice", format!("‹ {v} ›")),
+            ParamKind::Flag => ("flag", if v == "yes" { "[x] yes".into() } else { "[ ] no".into() }),
+        };
+        let mark = if here { "▌" } else { " " };
+        let head = format!("{mark}{name:<width$}  {kind:<7}", width = width);
+        if here && matches!(p.kind, ParamKind::Text | ParamKind::File { .. }) {
+            cursor = Some((head.chars().count() + v.chars().count()) as u16);
+        }
+        let style = if here { Style::new().fg(t.text).bg(t.bg) } else { Style::new().fg(t.text) };
+        lines.push(Line::from(vec![
+            Span::styled(head, Style::new().fg(if here { t.accent } else { t.muted })),
+            Span::styled(shown, style),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(form.error.clone().unwrap_or_default(), Style::new().fg(t.err))));
+    let mut hints = "tab next · enter run · esc back".to_string();
+    match form.param().kind {
+        ParamKind::File { .. } => hints.push_str(" · ctrl-f pick a file"),
+        ParamKind::Choice { .. } => hints.push_str(" · ←/→ choose"),
+        ParamKind::Flag => hints.push_str(" · space toggles"),
+        ParamKind::Text => {}
+    }
+    lines.push(Line::from(Span::styled(hints, Style::new().fg(t.muted))));
+    f.render_widget(Paragraph::new(lines), inner);
+    if let Some(x) = cursor {
+        f.set_cursor_position(((inner.x + x).min(inner.right().saturating_sub(1)), inner.y + 1 + form.field as u16));
+    }
+}
+
+/// The built-in file list: a filter line over the matching files.
+fn draw_list_picker(f: &mut Frame, t: &Theme, lp: &super::picker::ListPicker) {
+    let shown = lp.shown();
+    let rect = centred(f.area(), 70, shown.len() as u16 + 5);
+    f.render_widget(Clear, rect);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(t.border_focus))
+        .title(Line::from(Span::styled(" pick a file ", Style::new().fg(t.accent).add_modifier(Modifier::BOLD))))
+        .title_bottom(Line::from(Span::styled(
+            " enter pick (or the typed path) · esc cancel ",
+            Style::new().fg(t.muted),
+        )))
+        .style(Style::new().bg(t.surface).fg(t.text))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let [query, list] = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(inner);
+    f.render_widget(
+        Line::from(vec![Span::styled("> ", Style::new().fg(t.accent)), Span::raw(lp.query.clone())]),
+        query,
+    );
+    f.set_cursor_position((query.x + 2 + lp.query.chars().count() as u16, query.y));
+    let items: Vec<ListItem> = shown.iter().map(|p| ListItem::new(Span::raw(p.to_string()))).collect();
+    let widget = List::new(items).highlight_style(Style::new().bg(t.bg)).highlight_symbol("▌");
+    let mut state = ListState::default().with_selected((!shown.is_empty()).then_some(lp.sel));
+    f.render_stateful_widget(widget, list, &mut state);
 }

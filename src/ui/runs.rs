@@ -9,17 +9,13 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use super::{App, Focus};
+use crate::run::chain::Scratch;
 use crate::run::{Colors, KILL_GRACE, Launch, Run, Size, Status};
 
 /// A live run silent for this long is shown as quiet.
 pub const QUIET_AFTER: Duration = Duration::from_secs(3);
 
-/// How a run is taken over: emulated draws its grid full-screen; raw hands it the terminal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TakeoverStyle {
-    Emulated,
-    Raw,
-}
+pub use crate::config::TakeoverStyle;
 
 /// Where a run opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,12 +25,18 @@ pub enum Display {
 }
 
 pub struct RunEntry {
+    /// Unique among this session's runs; indices shift as runs are removed.
+    pub id: u64,
     pub label: String,
     pub run: Run,
     /// The style used when this run is taken over.
     pub style: TakeoverStyle,
     /// Removed from Runs when it ends, leaving no trace.
     pub ephemeral: bool,
+    /// The run's private folder (`RUN_TMP`), deleted when it ends.
+    pub scratch: Option<Scratch>,
+    /// The step a chain stopped at, once it has failed.
+    pub failed_step: Option<usize>,
 }
 
 /// The Runs panel's state.
@@ -51,6 +53,8 @@ pub struct Runs {
     pub full: Size,
     /// Set by run reader threads when a screen changes.
     pub dirty: Arc<AtomicBool>,
+    /// The next run's id.
+    next_id: u64,
 }
 
 impl Default for Runs {
@@ -63,6 +67,7 @@ impl Default for Runs {
             pane: Rect::new(0, 0, 60, 20),
             full: Size { rows: 24, cols: 80 },
             dirty: Arc::new(AtomicBool::new(true)),
+            next_id: 0,
         }
     }
 }
@@ -78,8 +83,10 @@ pub enum Mark {
 }
 
 impl Mark {
-    pub fn of(run: &Run) -> Mark {
+    pub fn of(entry: &RunEntry) -> Mark {
+        let run = &entry.run;
         match run.status() {
+            Status::Exited(code) if let Some(step) = entry.failed_step => Mark::Failed(format!("step {step}: {code}")),
             Status::Live if run.quiet_for() >= QUIET_AFTER => Mark::Quiet(run.quiet_for().as_secs()),
             Status::Live => Mark::Live,
             Status::Exited(0) => Mark::Ok,
@@ -185,9 +192,20 @@ impl Runs {
 
 impl App {
     /// Starts `argv` in the report as a new run, selected, with the keys; returns its index.
-    /// `rpt` on the run's `PATH` is the rpt this TUI uses.
     pub fn launch(&mut self, label: &str, argv: Vec<String>, display: Display) -> Option<usize> {
-        let mut launch = Launch::new(argv, &self.view.root);
+        let launch = Launch::new(argv, &self.view.root);
+        self.start(label, launch, display, None)
+    }
+
+    /// Starts `launch` as a new run, selected, with the keys; returns its index. Every run gets
+    /// `RPT_REPORT_DIR`, and `rpt` on its `PATH` is the rpt this TUI uses.
+    pub(super) fn start(
+        &mut self,
+        label: &str,
+        mut launch: Launch,
+        display: Display,
+        scratch: Option<Scratch>,
+    ) -> Option<usize> {
         launch.env.push(("RPT_REPORT_DIR".into(), self.view.root.display().to_string()));
         launch.env.push(("PATH".into(), self.client.path().to_string_lossy().into_owned()));
         let defaults = Colors::default();
@@ -198,7 +216,16 @@ impl App {
         };
         match Run::spawn(launch, self.runs.pane_size(), self.runs.dirty.clone()) {
             Ok(run) => {
-                self.runs.entries.push(RunEntry { label: label.to_string(), run, style, ephemeral: false });
+                self.runs.next_id += 1;
+                self.runs.entries.push(RunEntry {
+                    id: self.runs.next_id,
+                    label: label.to_string(),
+                    run,
+                    style,
+                    ephemeral: false,
+                    scratch,
+                    failed_step: None,
+                });
                 let i = self.runs.entries.len() - 1;
                 self.runs.sel = i;
                 self.runs.keys = true;
@@ -220,6 +247,7 @@ impl App {
     pub fn tick(&mut self) -> bool {
         let plugins = self.poll_plugins();
         let ended = self.tick_runs();
+        self.finish_picker();
         if ended {
             self.refresh();
         }
@@ -240,6 +268,11 @@ impl App {
             let before = e.run.status();
             let now = e.run.poll();
             changed |= now != before;
+            if now != Status::Live
+                && let Some(scratch) = e.scratch.take()
+            {
+                e.failed_step = scratch.failed_step();
+            }
             if now == Status::Live && Some(i) != takeover {
                 e.run.resize(pane);
             }
@@ -261,7 +294,7 @@ impl App {
     fn drop_ended_ephemeral(&mut self) {
         while let Some(i) = self.runs.entries.iter().position(|e| e.ephemeral && e.run.status() != Status::Live) {
             let e = self.runs.remove(i);
-            if let Mark::Failed(why) = Mark::of(&e.run) {
+            if let Mark::Failed(why) = Mark::of(&e) {
                 self.toast = Some(format!("{} failed: {why}", e.label));
             }
         }
@@ -363,7 +396,15 @@ mod tests {
     fn entry(label: &str) -> RunEntry {
         let launch = Launch::new(vec!["true".into()], &std::env::temp_dir());
         let run = Run::spawn(launch, Size { rows: 5, cols: 20 }, Arc::new(AtomicBool::new(false))).unwrap();
-        RunEntry { label: label.into(), run, style: TakeoverStyle::Emulated, ephemeral: false }
+        RunEntry {
+            id: 0,
+            label: label.into(),
+            run,
+            style: TakeoverStyle::Emulated,
+            ephemeral: false,
+            scratch: None,
+            failed_step: None,
+        }
     }
 
     fn runs(labels: &[&str]) -> Runs {

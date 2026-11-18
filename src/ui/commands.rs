@@ -5,9 +5,11 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::form::Outcome;
 use super::palette::{self, ArgLine, Entry, Kind, Row};
 use super::runs::{Display, TakeoverStyle};
 use super::{App, Focus};
+use crate::config::Step;
 use crate::rpt::{self, Client, Plugin};
 
 /// rpt's built-in verbs the palette offers, with the usage of those taking an argument line.
@@ -74,7 +76,9 @@ impl App {
             }
             Err(TryRecvError::Disconnected) => vec![],
         };
+        let names: Vec<String> = list.iter().map(|p| p.name.clone()).collect();
         self.plugins = Plugins::Ready(list);
+        self.drop_chains_named_like_plugins(&names);
         true
     }
 
@@ -83,8 +87,10 @@ impl App {
         let mut out = vec![];
         let mut edit = Entry::new(Kind::Chain, "edit", "Open the selected finding or problem in your editor");
         edit.key = Some("e".into());
+        edit.builtin = true;
         edit.disabled = self.edit_target().is_none().then(|| "needs a finding or problem".into());
         out.push(edit);
+        out.extend(self.chains.iter().map(|c| Entry::new(Kind::Chain, &c.name, &c.description)));
         if let Plugins::Ready(list) = &self.plugins {
             out.extend(list.iter().map(plugin_entry));
         }
@@ -122,18 +128,32 @@ impl App {
     pub(super) fn palette_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let Some(state) = self.palette.as_mut() else { return };
+        if let Some(form) = state.form.as_mut() {
+            match form.key(key) {
+                Outcome::Stay => {}
+                Outcome::PickFile => self.pick_file(),
+                Outcome::Back => state.form = None,
+                Outcome::Run => {
+                    let form = state.form.take().expect("the form just ran");
+                    self.palette = None;
+                    self.run_chain(&form);
+                }
+            }
+            return;
+        }
         if let Some(args) = state.args.as_mut() {
             match key.code {
                 KeyCode::Esc => state.args = None,
                 KeyCode::Enter => {
                     let (id, line) = (args.entry.id(), args.command());
                     self.palette = None;
-                    self.run_shell(id, &line);
+                    self.run_line(id, &line);
                 }
                 KeyCode::Backspace => {
                     args.text.pop();
                 }
                 KeyCode::Char('u') if ctrl => args.text.clear(),
+                KeyCode::Char('f') if ctrl => self.pick_file(),
                 KeyCode::Char(c) if !ctrl => args.text.push(c),
                 _ => {}
             }
@@ -181,11 +201,24 @@ impl App {
             }
             return;
         }
-        self.palette = None;
         match entry.kind {
-            Kind::Chain => self.edit(),
-            Kind::Plugin | Kind::Rpt => self.run_shell(entry.id(), &format!("rpt {}", entry.name)),
-            Kind::Tui => self.action(&entry.name),
+            Kind::Chain if entry.builtin => {
+                self.palette = None;
+                self.edit()
+            }
+            Kind::Chain => {
+                if let Some(chain) = self.chains.iter().find(|c| c.name == entry.name).cloned() {
+                    self.choose_chain(chain);
+                }
+            }
+            Kind::Plugin | Kind::Rpt => {
+                self.palette = None;
+                self.run_line(entry.id(), &format!("rpt {}", entry.name))
+            }
+            Kind::Tui => {
+                self.palette = None;
+                self.action(&entry.name)
+            }
         }
     }
 
@@ -204,17 +237,14 @@ impl App {
     }
 
     /// Notes a command as used, most recent first.
-    fn used(&mut self, id: String) {
+    pub(super) fn used(&mut self, id: String) {
         self.recent.retain(|r| *r != id);
         self.recent.insert(0, id);
     }
 
-    /// Runs command `id` as a shell line in a pane, the way a one-step chain runs:
-    /// `bash -o pipefail -c`.
-    pub(super) fn run_shell(&mut self, id: String, line: &str) {
-        self.used(id);
-        let argv = vec!["bash".into(), "-o".into(), "pipefail".into(), "-c".into(), line.into()];
-        self.launch(line, argv, Display::Pane);
+    /// Runs command `id`, a plugin or rpt built-in, as a one-step chain in a pane.
+    pub(super) fn run_line(&mut self, id: String, line: &str) {
+        self.start_steps(id, line, &[Step::new(line)], vec![], Display::Pane, false);
     }
 
     /// The file `edit` opens, and its line: the highlighted row of whichever of Findings and

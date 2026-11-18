@@ -1,9 +1,12 @@
 //! The terminal UI: app state, keys and the main loop. Drawing is in `home`.
 
+mod chains;
 mod commands;
 pub mod edit;
+pub mod form;
 mod home;
 pub mod palette;
+pub mod picker;
 mod runs;
 mod term;
 pub mod theme;
@@ -29,6 +32,7 @@ use ratatui::{
     },
 };
 
+use crate::config::{Chain, Config};
 use crate::rpt::{self, Client, Finding, Problem, Version};
 use theme::Theme;
 
@@ -130,13 +134,27 @@ pub struct App {
     recent: Vec<String>,
     /// `$VISUAL` and `$EDITOR`, as rpt-tui was started with.
     editor_env: (Option<String>, Option<String>),
+    /// Chains from the config, less any named like a plugin.
+    chains: Vec<Chain>,
+    /// `file_picker:` from the config.
+    file_picker: Option<String>,
+    /// A file picker run in progress.
+    picking: Option<picker::Picking>,
+    /// The built-in file list, when open.
+    list_picker: Option<picker::ListPicker>,
 }
 
 impl App {
     /// Reads the report through `client` and starts listing plugins in the background.
     pub fn new(client: Client) -> App {
+        App::with_config(client, Config::default())
+    }
+
+    /// As [`App::new`], with chains and settings from `config`; its errors join the startup toast.
+    pub fn with_config(client: Client, config: Config) -> App {
         let view = ReportView::load(&client, client.report());
-        let toast = (!view.errors.is_empty()).then(|| view.errors.join("; "));
+        let errors: Vec<String> = view.errors.iter().chain(&config.errors).cloned().collect();
+        let toast = (!errors.is_empty()).then(|| errors.join("; "));
         App {
             view,
             focus: Focus::Findings,
@@ -152,6 +170,10 @@ impl App {
             palette: None,
             recent: vec![],
             editor_env: (std::env::var("VISUAL").ok(), std::env::var("EDITOR").ok()),
+            chains: config.chains,
+            file_picker: config.file_picker,
+            picking: None,
+            list_picker: None,
         }
     }
 
@@ -203,7 +225,12 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         // Any key dismisses the toast; real toast timing comes with notifications.
         self.toast = None;
-        if self.palette.is_some() {
+        if self.list_picker.is_some() {
+            self.list_picker_key(key);
+            return;
+        }
+        // While a picker run has the keys, the palette waits behind it.
+        if self.palette.is_some() && self.picking.is_none() {
             self.palette_key(key);
             return;
         }
@@ -220,7 +247,7 @@ impl App {
             KeyCode::Char('p') if ctrl => self.open_palette(),
             KeyCode::Char('e') if self.focus != Focus::Runs => self.edit(),
             KeyCode::Char('v') => {
-                self.run_shell(palette::Entry::new(palette::Kind::Rpt, "validate", "").id(), "rpt validate")
+                self.run_line(palette::Entry::new(palette::Kind::Rpt, "validate", "").id(), "rpt validate")
             }
             KeyCode::Tab => self.focus_next(),
             KeyCode::Char('1') => self.set_focus(Focus::Findings),
@@ -283,7 +310,11 @@ const FRAME: Duration = Duration::from_millis(16);
 
 /// Runs the TUI until the user quits; returns the process exit code.
 pub fn run(report: &Path, rpt_bin: &Path) -> i32 {
-    let mut app = App::new(Client::new(rpt_bin, report));
+    let config =
+        crate::config::path(std::env::var_os("XDG_CONFIG_HOME").as_deref(), std::env::var_os("HOME").as_deref())
+            .map(|p| crate::config::load_file(&p))
+            .unwrap_or_default();
+    let mut app = App::with_config(Client::new(rpt_bin, report), config);
     let mut terminal = ratatui::init();
     let result = main_loop(&mut terminal, &mut app);
     app.kill_all();
