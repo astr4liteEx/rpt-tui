@@ -169,6 +169,23 @@ impl App {
             }
             return;
         }
+        if let Some(line) = state.export.as_mut() {
+            match key.code {
+                KeyCode::Esc => state.export = None,
+                KeyCode::Enter => {
+                    let (id, text) = (line.run, line.text.clone());
+                    self.palette = None;
+                    self.export(id, &text);
+                }
+                KeyCode::Backspace => {
+                    line.text.pop();
+                }
+                KeyCode::Char('u') if ctrl => line.text.clear(),
+                KeyCode::Char(c) if !ctrl => line.text.push(c),
+                _ => {}
+            }
+            return;
+        }
         if let Some(args) = state.args.as_mut() {
             match key.code {
                 KeyCode::Esc => state.args = None,
@@ -268,7 +285,15 @@ impl App {
             Action::Up => self.move_by(-1),
             Action::Top => self.move_to(0),
             Action::Bottom => self.move_to(usize::MAX),
-            Action::Open if self.focus == Focus::Runs => self.runs.keys = self.runs.selected_live().is_some(),
+            // A live run gets the keys; a finished one shows its transcript full width.
+            Action::Open if self.focus == Focus::Runs => match self.runs.selected() {
+                Some(e) if e.is_live() => self.runs.keys = true,
+                Some(_) => {
+                    self.full = true;
+                    self.scroll = 0;
+                }
+                None => {}
+            },
             Action::Open => {
                 self.full = true;
                 self.scroll = 0;
@@ -276,9 +301,52 @@ impl App {
             Action::Back if self.full => self.full = false,
             Action::Back if self.focus == Focus::Runs => self.set_focus(self.last_list),
             Action::Edit => self.edit_action(),
+            Action::Rerun => self.rerun(),
             Action::Takeover => self.take_over_selected(),
-            Action::KillOrDelete => self.kill_selected(),
+            Action::KillOrDelete => self.kill_or_delete(),
+            Action::ClearHistory => self.ask_clear_history(),
+            Action::ExportTranscript => self.ask_export(),
             _ => {}
+        }
+    }
+
+    /// `rerun`: the selected run's command as configured now, its form or argument line filled
+    /// with what it ran with; anything else runs at once.
+    fn rerun(&mut self) {
+        let Some(e) = self.runs.selected() else { return };
+        if e.is_live() {
+            self.toast = Some(format!("{} is still running", e.label));
+            return;
+        }
+        let Some(inv) = e.invocation.clone() else {
+            self.toast = Some(format!("{} can't be run again", e.label));
+            return;
+        };
+        let name = inv.command.split_once(' ').map_or("", |(_, n)| n).to_string();
+        if inv.command.starts_with("chain ") {
+            let Some(chain) = self.chains.iter().find(|c| c.name == name).cloned() else {
+                self.toast = Some(format!("chain {name} is no longer in the config"));
+                return;
+            };
+            match self.unmet(chain.needs) {
+                Some(why) => self.toast = Some(format!("{name} {why}")),
+                None => self.choose_chain_with(chain, &inv.params),
+            }
+            return;
+        }
+        let Some(entry) = self.entries().into_iter().find(|x| x.id() == inv.command) else {
+            self.toast = Some(match self.plugins {
+                Plugins::Loading(_) => "plugins are still loading; try again in a moment".into(),
+                Plugins::Ready(_) => format!("{} is no longer available", inv.command),
+            });
+            return;
+        };
+        if entry.args.is_some() {
+            let mut line = ArgLine::new(entry);
+            line.text = inv.args.unwrap_or_default();
+            self.palette = Some(palette::State { args: Some(line), ..Default::default() });
+        } else {
+            self.run_line(inv.command, &format!("rpt {name}"));
         }
     }
 
@@ -307,13 +375,19 @@ impl App {
 
     /// Notes a command as used, most recent first.
     pub(super) fn used(&mut self, id: String) {
+        if let Some(store) = &self.history {
+            store.note_used(&id);
+        }
         self.recent.retain(|r| *r != id);
         self.recent.insert(0, id);
     }
 
     /// Runs command `id`, a plugin or rpt built-in, as a one-step chain in a pane.
     pub(super) fn run_line(&mut self, id: String, line: &str) {
-        self.start_steps(id, line, &[Step::new(line)], vec![], Display::Pane, false);
+        let verb = id.split_once(' ').map_or("", |(_, v)| v);
+        let args = line.strip_prefix(&format!("rpt {verb}")).map(|a| a.trim_start().to_string());
+        let invocation = crate::history::Invocation { command: id, params: vec![], args };
+        self.start_steps(invocation, line, &[Step::new(line)], vec![], Display::Pane, false);
     }
 
     /// The file `edit` opens, and its line: the highlighted row of whichever of Findings and

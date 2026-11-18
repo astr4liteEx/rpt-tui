@@ -226,15 +226,15 @@ actions! {
     Open "open" Scope::Panels(LISTS), ["enter"], true, "Full view, or the keys to a run";
     Back "back" Scope::Panels(LISTS), ["esc"], true, "Leave the full view, or Runs";
     Edit "edit" Scope::Panels(ITEMS), ["e"], true, "Run edit on the selected item";
-    Rerun "rerun" Scope::Panels(RUNS), ["r"], false, "Run the selected run again";
-    KillOrDelete "kill_or_delete" Scope::Panels(RUNS), ["x"], true, "Kill the selected run";
+    Rerun "rerun" Scope::Panels(RUNS), ["r"], true, "Run the selected run again";
+    KillOrDelete "kill_or_delete" Scope::Panels(RUNS), ["x"], true, "Kill a live run, or delete a finished one";
     Takeover "takeover" Scope::Panels(RUNS), ["f"], true, "Take over the selected run";
     LeaveRun "leave_run" Scope::Run, ["ctrl-g"], true, "Give the keys back to the TUI";
     ToggleTakeover "toggle_takeover" Scope::Run, ["ctrl-t"], true, "Switch between pane and takeover";
     Theme "theme" Scope::Global, [], false, "Switch the theme";
     ReloadConfig "reload-config" Scope::Global, [], false, "Read the config again";
-    ClearHistory "clear-history" Scope::Global, [], false, "Empty this report's run history";
-    ExportTranscript "export-transcript" Scope::Global, [], false, "Save the selected run's transcript";
+    ClearHistory "clear-history" Scope::Global, [], true, "Empty this report's run history";
+    ExportTranscript "export-transcript" Scope::Global, [], true, "Save the selected run's transcript";
     FixKeys "fix-keys" Scope::Global, [], true, "Fix key clashes in the config";
 }
 

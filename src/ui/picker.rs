@@ -141,7 +141,7 @@ impl App {
             scratch.output().display().to_string(),
         ];
         let focus = self.focus;
-        if let Some(i) = self.start("pick a file", Launch::new(argv, &self.view.root), Display::Pane, None) {
+        if let Some(i) = self.start("pick a file", Launch::new(argv, &self.view.root), Display::Pane, None, None) {
             self.picking = Some(Picking { run: self.runs.entries[i].id, scratch, target, focus });
         }
         Ok(())
@@ -155,12 +155,12 @@ impl App {
             self.picking = None;
             return;
         };
-        if self.runs.entries[i].run.status() == crate::run::Status::Live {
+        if self.runs.entries[i].is_live() {
             return;
         }
         let entry = self.runs.remove(i);
         let p = self.picking.take().expect("checked above");
-        if entry.run.status() == crate::run::Status::Exited(0) {
+        if entry.status() == crate::run::Status::Exited(0) {
             let out = std::fs::read_to_string(p.scratch.output()).unwrap_or_default();
             if let Some(line) = out.lines().next().filter(|l| !l.trim().is_empty()) {
                 self.fill(p.target, line.trim_end());

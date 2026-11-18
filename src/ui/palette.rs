@@ -161,6 +161,16 @@ pub struct State {
     pub args: Option<ArgLine>,
     /// A chain's parameter form.
     pub form: Option<super::form::Form>,
+    /// `export-transcript`'s path line.
+    pub export: Option<ExportLine>,
+}
+
+/// Where to save a run's transcript, as typed.
+#[derive(Debug)]
+pub struct ExportLine {
+    /// The run's id.
+    pub run: u64,
+    pub text: String,
 }
 
 /// The free-text argument line of a plugin or `set`/`delete`.

@@ -1,6 +1,6 @@
 //! `config.yaml`: chains with every key and rule, and the errors the startup toast lists.
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rpt_tui::config::{self, Config, Display, Needs, ParamKind, TakeoverStyle};
 
@@ -261,4 +261,47 @@ fn settings_read_by_other_parts_of_the_tui_load_without_errors() {
     let c =
         config::load("theme: charm\nkeys: { leave_run: ctrl-g }\nhistory: { max_runs: 3 }\nnotify: { bell: true }\n");
     assert!(c.errors.is_empty(), "{:?}", c.errors);
+}
+
+#[test]
+fn history_settings_load_and_fill_in_defaults() {
+    let c = config::load("history: { dir: ~/h, max_runs: 3, max_days: 7, max_transcript_mib: 2 }\n");
+    assert!(c.errors.is_empty(), "{:?}", c.errors);
+    assert_eq!(c.history.dir, Some(PathBuf::from("~/h")));
+    assert_eq!(c.history.limits.max_runs, 3);
+    assert_eq!(c.history.limits.max_days, 7);
+    assert_eq!(c.history.limits.max_transcript, 2 * 1024 * 1024);
+
+    let d = config::load("");
+    assert_eq!(d.history.dir, None);
+    assert_eq!(d.history.limits, rpt_tui::history::Limits::default());
+}
+
+#[test]
+fn the_history_dir_takes_a_leading_tilde_and_defaults_to_the_state_dir() {
+    let (state, home) = (Some(OsStr::new("/x/state")), Some(OsStr::new("/home/u")));
+    let dir = |written: Option<&str>, state, home| config::history_dir(written.map(Path::new), state, home);
+
+    assert_eq!(dir(Some("~/h"), state, home), Some(PathBuf::from("/home/u/h")));
+    assert_eq!(dir(Some("/abs/h"), state, home), Some(PathBuf::from("/abs/h")));
+    assert_eq!(dir(None, state, home), Some(PathBuf::from("/x/state/rpt-tui")));
+    assert_eq!(dir(None, Some(OsStr::new("")), home), Some(PathBuf::from("/home/u/.local/state/rpt-tui")));
+    assert_eq!(dir(None, None, None), None);
+}
+
+#[test]
+fn history_limits_are_positive_whole_numbers_and_keys_are_known() {
+    for (bad, what) in [
+        ("max_runs: 0", "max_runs"),
+        ("max_days: -1", "max_days"),
+        ("max_transcript_mib: 1.5", "max_transcript_mib"),
+        ("max_runs: lots", "max_runs"),
+        ("maxruns: 3", "maxruns"),
+    ] {
+        let c = config::load(&format!("history: {{ {bad} }}\n"));
+        assert_eq!(c.errors.len(), 1, "{bad}: {:?}", c.errors);
+        assert!(c.errors[0].starts_with("config.yaml: history:") && c.errors[0].contains(what), "{:?}", c.errors);
+        assert_eq!(c.history.limits, rpt_tui::history::Limits::default(), "{bad}");
+    }
+    assert_eq!(config::load("history: [a]\n").errors, ["config.yaml: history: not a map of settings"]);
 }

@@ -247,7 +247,7 @@ fn a_run_is_listed_with_the_time_it_started() {
     let out = s.until("✔ 0");
 
     // The screen masks a clock time (two digits, colon, …) as hh:mm:ss.
-    assert!(out.contains("▌✔ 0         hh:mm:ss listing"), "the start time before the label: {out}");
+    assert!(out.contains("▌✔ 0  hh:mm:ss listing"), "the start time before the label: {out}");
 }
 
 #[test]

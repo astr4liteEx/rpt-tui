@@ -8,7 +8,7 @@ use ratatui::{
     widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 
-use super::{App, Focus, Mark, form::Form, palette, term::TermView, theme::Theme};
+use super::{App, Focus, Mark, form::Form, palette, plural, term::TermView, theme::Theme};
 use crate::config::ParamKind;
 use crate::keys::Action;
 use crate::rpt::{Finding, Problem};
@@ -22,7 +22,7 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
         Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(f.area());
     draw_header(f, header, app);
 
-    let full = app.full && app.focus != Focus::Runs;
+    let full = app.full;
     let right = if full {
         body
     } else {
@@ -44,6 +44,7 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
     match app.focus {
         Focus::Findings => draw_finding_preview(f, right, app),
         Focus::Problems => draw_problem(f, right, app),
+        Focus::Runs if full => draw_transcript(f, right, app),
         Focus::Runs => draw_pane(f, right, app),
     }
 
@@ -61,9 +62,8 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
     if let (Some(g), Some((trouble, left))) = (&app.guide, app.guide_trouble()) {
         draw_guide(f, &t, g, &trouble, left);
     }
-    if app.confirm_quit {
-        let n = app.runs.entries.iter().filter(|e| e.run.status() == crate::run::Status::Live).count();
-        let msg = format!("kill {n} live run{} and quit? y/n", if n == 1 { "" } else { "s" });
+    if let Some(c) = &app.confirm {
+        let msg = app.question(c);
         let rect = centred(f.area(), msg.chars().count() as u16 + 4, 3);
         f.render_widget(Clear, rect);
         let block = Block::bordered()
@@ -75,7 +75,8 @@ pub fn draw(f: &mut Frame, app: &App) -> Option<Rect> {
     if let Some(msg) = &app.toast {
         draw_toast(f, &t, msg);
     }
-    Some(Block::bordered().inner(right))
+    // Full width, the right side is no run's pane: live runs keep the pane's size.
+    (!full).then(|| Block::bordered().inner(right))
 }
 
 /// The footer's key hints, from the live bindings; an unbound action's hint is left out.
@@ -107,10 +108,15 @@ fn hints(app: &App, full: bool) -> String {
             Focus::Findings | Focus::Problems => {
                 v.extend([hint(Action::Edit, "edit"), hint(Action::Open, "open"), hint(Action::Validate, "validate")])
             }
-            Focus::Runs => v.extend([
+            Focus::Runs if app.runs.selected().is_none_or(|e| e.is_live()) => v.extend([
                 hint(Action::Open, "keys"),
                 hint(Action::Takeover, "takeover"),
                 hint(Action::KillOrDelete, "kill"),
+            ]),
+            Focus::Runs => v.extend([
+                hint(Action::Open, "open"),
+                hint(Action::Rerun, "rerun"),
+                hint(Action::KillOrDelete, "delete"),
             ]),
         }
         v.extend([
@@ -205,27 +211,56 @@ fn draw_pane(f: &mut Frame, area: Rect, app: &App) {
         return draw_placeholder(f, area, &t, "Run", "No run selected.");
     };
     let has_keys = app.runs.key_target() == Some(app.runs.sel);
-    let colour = if has_keys { t.border_run } else { t.border };
-    let block = Block::bordered()
+    let block = run_block(app, entry, if has_keys { t.border_run } else { t.border });
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    match &entry.run {
+        Some(run) => run.with_screen(|screen| draw_screen(f, inner, app, screen, has_keys)),
+        // Read back from history: the end of its transcript.
+        None => app.with_replay(app.runs.sel, inner, false, |p| draw_screen(f, inner, app, p.screen(), false)),
+    }
+}
+
+/// A run's border: its label, its mark, and when it started, how long it took and how long ago.
+fn run_block<'a>(app: &App, entry: &super::runs::RunEntry, colour: ratatui::style::Color) -> Block<'a> {
+    let t = app.theme;
+    let now = std::time::SystemTime::now();
+    let mut about = format!("started {}", super::time::when(entry.started, now));
+    if let Some((_, took)) = &entry.ended {
+        let since = now.duration_since(entry.started + *took).unwrap_or_default();
+        about.push_str(&format!(" · {} · {}", super::time::took(*took), super::time::ago(since)));
+    }
+    Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(colour))
         .title(Line::from(Span::styled(format!(" {} ", entry.label), Style::new().fg(t.text))))
         .title(
             Line::from(Span::styled(format!(" {} ", Mark::of(entry).text()), Style::new().fg(t.muted))).right_aligned(),
-        );
+        )
+        .title_bottom(Line::from(Span::styled(format!(" {about} "), Style::new().fg(t.muted))))
+}
+
+/// A finished run's transcript, full width; it scrolls.
+fn draw_transcript(f: &mut Frame, area: Rect, app: &App) {
+    let Some(entry) = app.runs.selected() else { return };
+    let block = run_block(app, entry, app.theme.border_focus);
     let inner = block.inner(area);
     f.render_widget(block, area);
-    draw_screen(f, inner, app, &entry.run, has_keys);
+    app.with_replay(app.runs.sel, inner, true, |p| {
+        p.screen_mut().set_scrollback(usize::MAX);
+        let max = p.screen().scrollback();
+        app.scroll_max.set(max.min(u16::MAX as usize) as u16);
+        p.screen_mut().set_scrollback(max - (app.scroll as usize).min(max));
+        draw_screen(f, inner, app, p.screen(), false);
+    });
 }
 
 /// A run's screen in `area`, with the cursor shown when the run has the keys.
-fn draw_screen(f: &mut Frame, area: Rect, app: &App, run: &crate::run::Run, has_keys: bool) {
+fn draw_screen(f: &mut Frame, area: Rect, app: &App, screen: &vt100::Screen, has_keys: bool) {
     let t = app.theme;
-    let cursor = run.with_screen(|screen| {
-        f.render_widget(TermView { screen, fg: t.text, bg: t.bg }, area);
-        let (row, col) = screen.cursor_position();
-        (!screen.hide_cursor()).then_some((area.x + col, area.y + row))
-    });
+    f.render_widget(TermView { screen, fg: t.text, bg: t.bg }, area);
+    let (row, col) = screen.cursor_position();
+    let cursor = (!screen.hide_cursor()).then_some((area.x + col, area.y + row));
     if has_keys && let Some((x, y)) = cursor.filter(|&(x, y)| x < area.right() && y < area.bottom()) {
         f.set_cursor_position((x, y));
     }
@@ -237,7 +272,9 @@ pub fn draw_takeover(f: &mut Frame, app: &App, i: usize) {
     let Some(entry) = app.runs.entries.get(i) else { return };
     let [screen, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
     f.render_widget(Block::new().style(Style::new().bg(t.bg).fg(t.text)), f.area());
-    draw_screen(f, screen, app, &entry.run, true);
+    if let Some(run) = &entry.run {
+        run.with_screen(|s| draw_screen(f, screen, app, s, true));
+    }
     let line = Line::from(vec![
         Span::styled(format!(" {} ", entry.label), Style::new().fg(t.bg).bg(t.border_run).add_modifier(Modifier::BOLD)),
         Span::styled(format!(" {} ", Mark::of(entry).text()), Style::new().fg(t.muted)),
@@ -285,10 +322,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(format!("   ▲ {banner}"), Style::new().fg(t.warn)));
     }
     f.render_widget(Line::from(spans), area);
-}
-
-fn plural(n: usize, word: &str) -> String {
-    if n == 1 { word.to_string() } else { format!("{word}s") }
 }
 
 fn draw_findings(f: &mut Frame, area: Rect, app: &App) {
@@ -378,27 +411,54 @@ fn draw_runs(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(Paragraph::new(Span::styled("No runs yet.", Style::new().fg(t.muted))).block(block), area);
         return;
     }
-    let items: Vec<ListItem> = app
-        .runs
-        .entries
+    // Inside: borders (2), padding (2) and the highlight mark (1).
+    let width = (area.width as usize).saturating_sub(5);
+    let now = std::time::SystemTime::now();
+    let order = app.runs.order();
+    // Marks line up in a column as wide as the widest shown.
+    let marks: Vec<Mark> = order.iter().map(|&i| Mark::of(&app.runs.entries[i])).collect();
+    let mark_width = marks.iter().map(|m| m.text().chars().count()).max().unwrap_or(0) + 2;
+    let items: Vec<ListItem> = order
         .iter()
-        .map(|e| {
-            let mark = Mark::of(e);
-            let colour = mark.colour(&t);
+        .zip(marks)
+        .map(|(&i, mark)| {
+            let e = &app.runs.entries[i];
+            let when = format!("{} ", super::time::when(e.started, now));
+            let took = e.ended.as_ref().map(|(_, d)| format!(" {}", super::time::took(*d))).unwrap_or_default();
+            let room = width.saturating_sub(mark_width + when.chars().count() + took.chars().count());
+            let label = fit(&e.label, room);
+            let dim = if e.earlier { Modifier::DIM } else { Modifier::empty() };
+            let label_style = if e.ephemeral {
+                Style::new().fg(t.muted).add_modifier(Modifier::ITALIC)
+            } else {
+                Style::new().fg(t.text)
+            };
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{:<12}", mark.text()), Style::new().fg(colour)),
-                Span::styled(format!("{} ", super::runs::clock(e.started)), Style::new().fg(t.muted)),
-                if e.ephemeral {
-                    Span::styled(e.label.clone(), Style::new().fg(t.muted).add_modifier(Modifier::ITALIC))
-                } else {
-                    Span::styled(e.label.clone(), Style::new().fg(t.text))
-                },
+                Span::styled(
+                    format!("{:<mark_width$}", mark.text()),
+                    Style::new().fg(mark.colour(&t)).add_modifier(dim),
+                ),
+                Span::styled(when, Style::new().fg(t.muted).add_modifier(dim)),
+                Span::styled(format!("{label:<room$}"), label_style.add_modifier(dim)),
+                Span::styled(took, Style::new().fg(t.muted).add_modifier(dim)),
             ]))
         })
         .collect();
     let list = List::new(items).block(block).highlight_style(Style::new().bg(t.surface)).highlight_symbol("▌");
-    let mut state = ListState::default().with_selected(Some(app.runs.sel));
+    let mut state = ListState::default().with_selected(order.iter().position(|&i| i == app.runs.sel));
     f.render_stateful_widget(list, area, &mut state);
+}
+
+/// `text` cut to `width` characters, ending in `…` when cut.
+fn fit(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    if width > 0 {
+        out.push('…');
+    }
+    out
 }
 
 /// Body sections in reading order: the usual three first, then any others by name.
@@ -511,6 +571,25 @@ fn draw_palette(f: &mut Frame, app: &App, state: &palette::State) {
     };
     if let Some(form) = &state.form {
         return draw_form(f, &t, form, block(format!(" chain {} ", form.chain.name)));
+    }
+    if let Some(line) = &state.export {
+        let rect = centred(f.area(), 84, 5);
+        f.render_widget(Clear, rect);
+        let b = block(" export-transcript ".into());
+        let inner = b.inner(rect);
+        f.render_widget(b, rect);
+        let prompt = "save to ";
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(prompt, Style::new().fg(t.accent)),
+                Span::styled(line.text.clone(), Style::new().fg(t.text)),
+            ]),
+            Line::from(Span::styled("enter save · ctrl-u clear · esc back", Style::new().fg(t.muted))),
+        ];
+        f.render_widget(Paragraph::new(lines), inner);
+        let x = inner.x + (prompt.chars().count() + line.text.chars().count()) as u16;
+        f.set_cursor_position((x.min(inner.right().saturating_sub(1)), inner.y));
+        return;
     }
     if let Some(args) = &state.args {
         let rect = centred(f.area(), 84, 6);

@@ -11,7 +11,7 @@ pub const RPT_VERBS: [&str; 10] =
     ["add", "assemble", "delete", "findings", "plugins", "scope", "set", "severities", "validate", "version"];
 
 /// Top-level keys read by later parts of the TUI; accepted here without a complaint.
-const LATER_KEYS: [&str; 3] = ["theme", "history", "notify"];
+const LATER_KEYS: [&str; 2] = ["theme", "notify"];
 
 const CHAIN_KEYS: [&str; 9] =
     ["description", "key", "params", "needs", "ephemeral", "display", "takeover", "notify", "steps"];
@@ -112,6 +112,13 @@ pub struct KeySetting {
     pub keys: Vec<String>,
 }
 
+/// `history:`: where run history is kept, as written (see [`history_dir`]), and how much.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HistorySettings {
+    pub dir: Option<PathBuf>,
+    pub limits: crate::history::Limits,
+}
+
 /// What `config.yaml` says, as far as this part of the TUI reads it.
 #[derive(Debug, Default)]
 pub struct Config {
@@ -121,6 +128,8 @@ pub struct Config {
     pub file_picker: Option<String>,
     /// `keys:`, in file order.
     pub keys: Vec<KeySetting>,
+    /// `history:`.
+    pub history: HistorySettings,
     /// One message per problem, for the startup toast.
     pub errors: Vec<String>,
 }
@@ -132,6 +141,24 @@ pub fn path(xdg_config_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<Pat
         None => PathBuf::from(home.filter(|h| !h.is_empty())?).join(".config"),
     };
     Some(base.join("rpt-tui").join("config.yaml"))
+}
+
+/// Where run history goes: `dir` as written, a leading `~/` meaning `home`; without it,
+/// `$XDG_STATE_HOME/rpt-tui`, else `~/.local/state/rpt-tui`.
+pub fn history_dir(dir: Option<&Path>, xdg_state_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    match (dir, xdg_state_home.filter(|x| !x.is_empty())) {
+        (Some(d), _) => expand_home(d, home),
+        (None, Some(x)) => Some(PathBuf::from(x).join("rpt-tui")),
+        (None, None) => expand_home(Path::new("~/.local/state/rpt-tui"), home),
+    }
+}
+
+/// `path` with a leading `~` meaning `home`; none when it has one and there is no home.
+pub fn expand_home(path: &Path, home: Option<&OsStr>) -> Option<PathBuf> {
+    match path.strip_prefix("~") {
+        Ok(rest) => Some(PathBuf::from(home.filter(|h| !h.is_empty())?).join(rest)),
+        Err(_) => Some(path.to_path_buf()),
+    }
 }
 
 /// Reads the config file; a missing file is an empty config.
@@ -174,11 +201,37 @@ pub fn load(text: &str) -> Config {
                 _ => config.errors.push("config.yaml: file_picker: not a command line".into()),
             },
             "keys" => load_keys(value, &mut config),
+            "history" => load_history(value, &mut config),
             k if LATER_KEYS.contains(&k) => {}
             k => config.errors.push(format!("config.yaml: unknown key `{k}`")),
         }
     }
     config
+}
+
+/// `history:`: each bad setting is an error, and keeps its default.
+fn load_history(value: &Value, config: &mut Config) {
+    let m = match value {
+        Value::Object(m) => m,
+        Value::Null => return,
+        _ => return config.errors.push("config.yaml: history: not a map of settings".into()),
+    };
+    let h = &mut config.history;
+    for (key, v) in m {
+        let positive = || v.as_u64().filter(|n| *n > 0);
+        let ok = match key.as_str() {
+            "dir" => v.as_str().map(|d| h.dir = Some(PathBuf::from(d))).ok_or("not a folder"),
+            "max_runs" => positive().map(|n| h.limits.max_runs = n as usize).ok_or("not a positive whole number"),
+            "max_days" => positive().map(|n| h.limits.max_days = n).ok_or("not a positive whole number"),
+            "max_transcript_mib" => positive()
+                .map(|n| h.limits.max_transcript = (n as usize).saturating_mul(1024 * 1024))
+                .ok_or("not a positive whole number"),
+            _ => Err("unknown key"),
+        };
+        if let Err(why) = ok {
+            config.errors.push(format!("config.yaml: history: {key}: {why}"));
+        }
+    }
 }
 
 fn load_keys(value: &Value, config: &mut Config) {

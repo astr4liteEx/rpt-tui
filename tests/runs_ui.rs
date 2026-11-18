@@ -84,8 +84,8 @@ fn a_finished_run_shows_its_exit_code() {
 
     let s = screen.until(&mut app, "✔ 0");
     let s = if s.contains("✘ 3") { s } else { screen.until(&mut app, "✘ 3") };
-    assert!(s.contains("✘ 3         hh:mm:ss fails"), "{s}");
-    assert!(s.contains("✔ 0         hh:mm:ss works"), "{s}");
+    assert!(s.contains("✘ 3  hh:mm:ss fails"), "{s}");
+    assert!(s.contains("✔ 0  hh:mm:ss works"), "{s}");
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn x_kills_the_selected_run() {
     key(&mut app, KeyCode::Char('x'));
 
     let s = screen.until(&mut app, "killed");
-    assert!(s.contains("killed      hh:mm:ss sleeper"), "{s}");
+    assert!(s.contains("killed  hh:mm:ss sleeper"), "{s}");
 }
 
 #[test]
@@ -198,7 +198,8 @@ fn j_and_k_choose_which_run_the_pane_shows() {
     screen.until(&mut app, "two-output");
     ctrl(&mut app, 'g');
 
-    key(&mut app, KeyCode::Char('k'));
+    // The newest run is listed first, so the older one is below it.
+    key(&mut app, KeyCode::Char('j'));
 
     let s = screen.until(&mut app, "one-output");
     assert!(s.contains("╭ first"), "{s}");

@@ -109,6 +109,8 @@ pub struct AppScreen {
     pub plugins: tempfile::TempDir,
     /// The folder holding `config.yaml`, when the app was started from a file.
     pub config_dir: Option<tempfile::TempDir>,
+    /// The config text, when the app was started from text.
+    config_text: Option<String>,
 }
 
 /// A stand-in plugin in `dir` answering `--describe` with `describe`, otherwise running `body`.
@@ -124,7 +126,24 @@ impl AppScreen {
     /// The fixture report with `config` (YAML) and the plugins in `plugins` alone on rpt's PATH
     /// (plus enough system for bash).
     pub fn new(config: &str, plugins: tempfile::TempDir) -> AppScreen {
-        AppScreen::start(plugins, None, |client| rpt_tui::ui::App::with_config(client, rpt_tui::config::load(config)))
+        let mut s = AppScreen::start(plugins, None, |client| {
+            rpt_tui::ui::App::with_config(client, rpt_tui::config::load(config))
+        });
+        s.config_text = Some(config.to_string());
+        s
+    }
+
+    /// The client for this screen's report, with its plugins alone on rpt's PATH.
+    fn client(report: &Path, plugins: &Path) -> rpt_tui::rpt::Client {
+        let path = format!("{}:/usr/bin:/bin", plugins.display());
+        rpt_tui::rpt::Client::new(rpt_bin(), report).with_path(path.as_ref())
+    }
+
+    /// Quits (killing live runs) and starts a new session on the same report and config.
+    pub fn restart(&mut self) {
+        self.app.kill_all();
+        let config = rpt_tui::config::load(self.config_text.as_deref().expect("started from text"));
+        self.app = rpt_tui::ui::App::with_config(AppScreen::client(self.report.path(), self.plugins.path()), config);
     }
 
     /// The fixture report and `plugins` on rpt's PATH, with the app `make` builds from a client.
@@ -134,10 +153,9 @@ impl AppScreen {
         make: impl FnOnce(rpt_tui::rpt::Client) -> rpt_tui::ui::App,
     ) -> AppScreen {
         let report = fixture();
-        let path = format!("{}:/usr/bin:/bin", plugins.path().display());
-        let app = make(rpt_tui::rpt::Client::new(rpt_bin(), report.path()).with_path(path.as_ref()));
+        let app = make(AppScreen::client(report.path(), plugins.path()));
         let term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
-        AppScreen { app, term, report, plugins, config_dir }
+        AppScreen { app, term, report, plugins, config_dir, config_text: None }
     }
 
     /// As [`AppScreen::new`], started from `config` written to a `config.yaml` it may edit.

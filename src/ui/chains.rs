@@ -4,20 +4,21 @@ use super::App;
 use super::form::Form;
 use super::runs::Display;
 use crate::config::{self, Chain, Step};
+use crate::history::Invocation;
 use crate::run::chain::{Scratch, steps_launch};
 
 impl App {
     /// Starts `steps` as one run: a chain, or a plugin or rpt built-in as a one-step chain.
     pub(super) fn start_steps(
         &mut self,
-        id: String,
+        invocation: Invocation,
         label: &str,
         steps: &[Step],
         env: Vec<(String, String)>,
         display: Display,
         ephemeral: bool,
     ) {
-        self.used(id);
+        self.used(invocation.command.clone());
         let scratch = match Scratch::new() {
             Ok(s) => s,
             Err(e) => {
@@ -26,7 +27,7 @@ impl App {
             }
         };
         let launch = steps_launch(steps, env, &self.view.root, &scratch);
-        if let Some(i) = self.start(label, launch, display, Some(scratch)) {
+        if let Some(i) = self.start(label, launch, display, Some(scratch), Some(invocation)) {
             self.runs.entries[i].ephemeral = ephemeral;
         }
     }
@@ -38,14 +39,35 @@ impl App {
             config::Display::Pane => Display::Pane,
             config::Display::Takeover => Display::Takeover(chain.takeover),
         };
-        let id = super::palette::Entry::new(super::palette::Kind::Chain, &chain.name, "").id();
+        let command = super::palette::Entry::new(super::palette::Kind::Chain, &chain.name, "").id();
+        let invocation = Invocation { command, params: form.env(), args: None };
+        if let Some(store) = &self.history {
+            let kept: Vec<(String, String)> =
+                chain.params.iter().zip(form.env()).filter(|(p, _)| p.remember).map(|(_, kv)| kv).collect();
+            if !kept.is_empty() {
+                store.remember(&chain.name, &kept);
+            }
+        }
         let steps = chain.steps.clone();
-        self.start_steps(id, &form.label(), &steps, form.env(), display, chain.ephemeral);
+        self.start_steps(invocation, &form.label(), &steps, form.env(), display, chain.ephemeral);
     }
 
     /// Opens the chain's form, or runs it at once when it has no parameters.
     pub(super) fn choose_chain(&mut self, chain: Chain) {
-        let form = Form::new(chain);
+        self.choose_chain_with(chain, &[]);
+    }
+
+    /// As [`App::choose_chain`], the form filled with `values` (by parameter name). Without
+    /// one, a `remember: true` parameter starts at the value it was last run with.
+    pub(super) fn choose_chain_with(&mut self, chain: Chain, values: &[(String, String)]) {
+        let mut form = Form::new(chain);
+        for (i, p) in form.chain.params.iter().enumerate() {
+            let given = values.iter().find(|(k, _)| *k == p.name).map(|(_, v)| v.clone());
+            let kept = || self.history.as_ref().filter(|_| p.remember)?.remembered(&form.chain.name, &p.name);
+            if let Some(v) = given.or_else(kept) {
+                form.values[i] = v;
+            }
+        }
         if form.chain.params.is_empty() {
             self.palette = None;
             self.run_chain(&form);

@@ -1,5 +1,6 @@
-//! Answers the terminal queries vt100 leaves unhandled. Without it nvim shows E1568 and
-//! prompt_toolkit stalls for 2 s. Off during raw takeover, when the real terminal answers.
+//! vt100's callbacks: answers the terminal queries vt100 leaves unhandled (without it nvim
+//! shows E1568 and prompt_toolkit stalls for 2 s; off during raw takeover, when the real
+//! terminal answers), and keeps the rows scrollback evicts, for the transcript.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,11 +24,16 @@ pub(crate) struct Responder {
     colors: Colors,
     /// Bytes to write back to the child, drained by the reader thread.
     pub(crate) replies: Vec<u8>,
+    /// Rows evicted from scrollback, coloured, and the capture's state after the last one.
+    pub(crate) evicted: String,
+    pub(crate) capture: vt100::capture::BasicFormattedCaptureState,
+    /// Bytes of transcript kept: `evicted` is cut back to this once it reaches twice as much.
+    pub(crate) cap: usize,
 }
 
 impl Responder {
-    pub(crate) fn new(colors: Colors, enabled: Arc<AtomicBool>) -> Responder {
-        Responder { enabled, colors, replies: vec![] }
+    pub(crate) fn new(colors: Colors, enabled: Arc<AtomicBool>, cap: usize) -> Responder {
+        Responder { enabled, colors, replies: vec![], evicted: String::new(), capture: Default::default(), cap }
     }
 
     fn reply(&mut self, s: &str) {
@@ -65,6 +71,17 @@ impl vt100::Callbacks for Responder {
             // DA2: terminal type 0, version 10.
             (Some(b'>'), 'c', 0) => self.reply("\x1b[>0;10;1c"),
             _ => {}
+        }
+    }
+
+    /// Rows a full-screen program draws on the alternate screen are not kept.
+    fn on_scroll(&mut self, contents: vt100::capture::RowContents<'_>, alternate_screen: bool) {
+        if alternate_screen {
+            return;
+        }
+        let _ = contents.write_formatted_basic(&mut self.evicted, &mut self.capture);
+        if self.evicted.len() >= self.cap.saturating_mul(2).max(4096) {
+            self.evicted = super::tail(&self.evicted, self.cap);
         }
     }
 

@@ -22,6 +22,50 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 /// How long `kill` waits after SIGHUP before SIGKILL.
 pub const KILL_GRACE: Duration = Duration::from_millis(400);
 
+/// Bytes of transcript a run keeps by default: the last 10 MiB.
+pub const TRANSCRIPT_CAP: usize = 10 * 1024 * 1024;
+
+/// A transcript as plain text, for export.
+pub fn plain(transcript: &str) -> String {
+    vt100::capture::basic_formatted_to_plain(transcript).collect()
+}
+
+/// The end of a transcript, about `max` bytes, starting at a line start when cut. The colour
+/// in force where it was cut comes first, so the kept text looks as it did.
+pub fn tail(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut from = text.len() - max;
+    while !text.is_char_boundary(from) {
+        from += 1;
+    }
+    let from = text[from..].find('\n').map_or(from, |i| from + i + 1);
+    let mut kept = sgr_in_force(&text[..from]);
+    kept.push_str(&text[from..]);
+    kept
+}
+
+/// The SGR sequences (`\x1b[…m`) since the last reset in `text`: the colour in force at its end.
+fn sgr_in_force(text: &str) -> String {
+    let mut since_reset: Vec<&str> = vec![];
+    let mut rest = text;
+    while let Some(at) = rest.find("\x1b[") {
+        let after = &rest[at + 2..];
+        let len = after.find(|c: char| !(c.is_ascii_digit() || c == ';')).unwrap_or(after.len());
+        if after[len..].starts_with('m') {
+            let params = &after[..len];
+            if params.is_empty() || params == "0" {
+                since_reset.clear();
+            } else {
+                since_reset.push(&rest[at..at + 2 + len + 1]);
+            }
+        }
+        rest = &after[len..];
+    }
+    since_reset.concat()
+}
+
 /// Lines of scrollback each run keeps.
 const SCROLLBACK: usize = 5000;
 
@@ -57,11 +101,20 @@ pub struct Launch {
     /// Variables taken out of the inherited environment.
     pub unset: Vec<String>,
     pub colors: Colors,
+    /// Bytes of transcript kept: the end of it.
+    pub transcript_cap: usize,
 }
 
 impl Launch {
     pub fn new(argv: Vec<String>, cwd: &Path) -> Launch {
-        Launch { argv, cwd: cwd.to_path_buf(), env: vec![], unset: vec![], colors: Colors::default() }
+        Launch {
+            argv,
+            cwd: cwd.to_path_buf(),
+            env: vec![],
+            unset: vec![],
+            colors: Colors::default(),
+            transcript_cap: TRANSCRIPT_CAP,
+        }
     }
 }
 
@@ -98,7 +151,7 @@ pub struct Run {
 
 impl Size {
     /// The size as vt100 wants it: at least one cell each way.
-    fn cells(self) -> (NonZeroU16, NonZeroU16) {
+    pub(crate) fn cells(self) -> (NonZeroU16, NonZeroU16) {
         let nz = |n: u16| NonZeroU16::new(n.max(1)).unwrap_or(NonZeroU16::MIN);
         (nz(self.rows), nz(self.cols))
     }
@@ -140,7 +193,7 @@ impl Run {
                 rows,
                 cols,
                 SCROLLBACK,
-                Responder::new(launch.colors, responder_on.clone()),
+                Responder::new(launch.colors, responder_on.clone(), launch.transcript_cap),
             )
         }));
 
@@ -236,6 +289,23 @@ impl Run {
     /// The visible screen as plain text.
     pub fn contents(&self) -> String {
         self.parser.lock().unwrap().screen().contents()
+    }
+
+    /// Everything the run printed, coloured (vt100's basic format, rows joined by `\n`): rows
+    /// evicted from scrollback, the scrollback, then the screen; the last `transcript_cap` bytes.
+    pub fn transcript(&self) -> String {
+        let p = self.parser.lock().unwrap();
+        let r = p.callbacks();
+        let (mut out, mut state) = (r.evicted.clone(), r.capture.clone());
+        let range = vt100::capture::BasicFormattedCaptureRange::Full(&mut state);
+        let _ = p.screen().write_contents_formatted_basic(&mut out, range);
+        // The screen's empty rows below the output are no part of it.
+        while let Some(nl) = out.rfind('\n')
+            && plain(&out[nl + 1..]).trim().is_empty()
+        {
+            out.truncate(nl);
+        }
+        tail(&out, r.cap)
     }
 
     /// SIGHUP to the child's process group and the PTY's foreground group, then SIGKILL after

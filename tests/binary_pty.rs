@@ -38,8 +38,11 @@ impl std::ops::DerefMut for Tui {
 
 /// Starts rpt-tui in a copy of the fixture, in a 24×100 terminal.
 fn rpt_tui(setup: Setup) -> Tui {
-    let report = common::fixture();
-    let bin = tempfile::tempdir().unwrap();
+    spawn(setup, common::fixture(), tempfile::tempdir().unwrap())
+}
+
+/// Starts rpt-tui in `report`, with its stand-ins, config and run history in `bin`.
+fn spawn(setup: Setup, report: tempfile::TempDir, bin: tempfile::TempDir) -> Tui {
     let describe = r#"if [ "$1" = --describe ]; then echo '{"summary":"the test plugin"}'; exit 0; fi"#;
     common::stand_in_rpt(bin.path(), "rpt-t-pane", &format!("{describe}\n{}\n", setup.pane));
     let editor = common::stand_in_rpt(bin.path(), "vi", &format!("{}\n", setup.editor));
@@ -57,6 +60,8 @@ fn rpt_tui(setup: Setup) -> Tui {
     std::fs::create_dir_all(config.join("rpt-tui")).unwrap();
     std::fs::write(config.join("rpt-tui/config.yaml"), setup.config).unwrap();
     spec.env.push(("XDG_CONFIG_HOME".into(), config.display().to_string()));
+    // Run history goes to its default place, under a state folder of its own.
+    spec.env.push(("XDG_STATE_HOME".into(), bin.path().join("state").display().to_string()));
     let run = Run::spawn(spec, Size { rows: 24, cols: 100 }, Arc::new(AtomicBool::new(false))).unwrap();
     Tui { run, report, _bin: bin }
 }
@@ -294,4 +299,21 @@ fn a_rebound_toggle_takeover_leaves_raw_takeover() {
     std::thread::sleep(Duration::from_millis(100));
     quit(&mut tui);
     assert_eq!(wait_end(&mut tui), Status::Exited(0));
+}
+
+#[test]
+fn a_finished_run_is_still_listed_when_rpt_tui_starts_again() {
+    let setup = || Setup { pane: "echo pane-hello", ..Setup::default() };
+    let mut tui = rpt_tui(setup());
+    start_pane_run(&mut tui);
+    until(&mut tui, "✔ 0");
+    quit(&mut tui);
+    assert_eq!(wait_end(&mut tui), Status::Exited(0));
+
+    let Tui { report, _bin: bin, .. } = tui;
+    let mut tui = spawn(setup(), report, bin);
+    let s = until(&mut tui, "rpt t-pane");
+
+    assert!(s.lines().any(|l| l.contains("✔ 0") && l.contains("rpt t-pane")), "{s}");
+    quit(&mut tui);
 }

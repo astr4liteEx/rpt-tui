@@ -5,12 +5,14 @@ mod commands;
 pub mod edit;
 pub mod form;
 mod guide;
+mod history;
 mod home;
 pub mod palette;
 pub mod picker;
 mod runs;
 mod term;
 pub mod theme;
+mod time;
 
 use runs::Runs;
 pub use runs::{Display, Mark, QUIET_AFTER, TakeoverStyle};
@@ -152,14 +154,38 @@ pub struct App {
     /// Help is open, scrolled this far; and how far it can go (set as it is drawn).
     help: Option<u16>,
     help_max: std::cell::Cell<u16>,
-    /// Quitting waits for y/n because runs are live.
-    confirm_quit: bool,
+    /// A y/n question waiting for its answer.
+    confirm: Option<Confirm>,
     /// The key guide, when open.
     guide: Option<guide::Guide>,
     /// The config file, which the guide's fixes are saved to.
     config_path: Option<PathBuf>,
     /// The config file was backed up before the guide's first save.
     backed_up: bool,
+    /// This report's run history; none when `history.dir` is unknown or can't be made.
+    history: Option<crate::history::Store>,
+    /// How much history keeps; the transcript cap applies even with history off.
+    history_limits: crate::history::Limits,
+    /// The last transcript replayed for drawing.
+    replay: std::cell::RefCell<Option<history::Replay>>,
+}
+
+/// `word`, with an `s` unless `n` is one.
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 { word.to_string() } else { format!("{word}s") }
+}
+
+/// What a y/n question asks to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Confirm {
+    /// Quit, killing the live runs.
+    Quit,
+    /// Delete the finished run with this id.
+    Delete(u64),
+    /// Empty this report's history.
+    Clear,
+    /// Write a run's transcript over a file.
+    Overwrite { run: u64, path: PathBuf },
 }
 
 /// The environment variables a run gets for the selection.
@@ -178,7 +204,7 @@ impl App {
     }
 
     /// As [`App::with_config`], from the config file at `path` (missing means no config); the
-    /// key guide saves its fixes there.
+    /// key guide saves its fixes there. Run history is kept only where `history.dir` says.
     pub fn from_config_file(client: Client, path: &Path) -> App {
         let mut app = App::with_config(client, crate::config::load_file(path));
         app.config_path = Some(path.to_path_buf());
@@ -192,7 +218,16 @@ impl App {
         let bindings = Bindings::new(&config.keys, &config.chains);
         let unfixable = bindings.troubles.iter().filter(|t| t.side().is_none()).map(|t| t.to_string());
         let errors: Vec<String> = view.errors.iter().chain(&config.errors).cloned().chain(unfixable).collect();
+        let mut errors = errors;
+        let root = std::path::absolute(client.report()).unwrap_or_else(|_| client.report().to_path_buf());
+        let limits = config.history.limits;
+        let history = config.history.dir.as_deref().and_then(|dir| {
+            crate::history::Store::open(dir, &root, limits)
+                .map_err(|e| errors.push(format!("run history is off: can't use {}: {e}", dir.display())))
+                .ok()
+        });
         let toast = (!errors.is_empty()).then(|| errors.join("; "));
+        let recent = history.as_ref().map(|h| h.recent()).unwrap_or_default();
         let mut app = App {
             view,
             focus: Focus::Findings,
@@ -206,7 +241,7 @@ impl App {
             plugins: commands::Plugins::load(&client),
             client,
             palette: None,
-            recent: vec![],
+            recent,
             editor_env: (std::env::var("VISUAL").ok(), std::env::var("EDITOR").ok()),
             bindings,
             key_settings: config.keys,
@@ -219,11 +254,15 @@ impl App {
             scroll_max: std::cell::Cell::new(0),
             help: None,
             help_max: std::cell::Cell::new(0),
-            confirm_quit: false,
+            confirm: None,
             guide: None,
             config_path: None,
             backed_up: false,
+            history,
+            history_limits: limits,
+            replay: Default::default(),
         };
+        app.load_history();
         app.open_guide();
         app
     }
@@ -308,9 +347,46 @@ impl App {
     /// `quit`: at once, or after a y/n when runs are live.
     fn request_quit(&mut self) {
         if self.any_live() {
-            self.confirm_quit = true;
+            self.confirm = Some(Confirm::Quit);
         } else {
             self.quit = true;
+        }
+    }
+
+    /// Adds `msg` to the toast.
+    fn add_toast(&mut self, msg: String) {
+        self.toast = Some(match self.toast.take() {
+            Some(t) => format!("{t}; {msg}"),
+            None => msg,
+        });
+    }
+
+    /// The question `c` asks, as shown.
+    fn question(&self, c: &Confirm) -> String {
+        match c {
+            Confirm::Quit => {
+                let n = self.runs.entries.iter().filter(|e| e.is_live()).count();
+                format!("kill {n} live {} and quit? y/n", plural(n, "run"))
+            }
+            Confirm::Delete(id) => {
+                let label = self.runs.entries.iter().find(|e| e.id == *id).map_or("", |e| e.label.as_str());
+                format!("delete run {label}? y/n")
+            }
+            Confirm::Clear => {
+                let n = self.runs.entries.iter().filter(|e| e.saved.is_some()).count();
+                format!("clear {n} finished {} from this report's history? y/n", plural(n, "run"))
+            }
+            Confirm::Overwrite { path, .. } => format!("overwrite {}? y/n", path.display()),
+        }
+    }
+
+    /// `y` to a question.
+    fn confirmed(&mut self, c: Confirm) {
+        match c {
+            Confirm::Quit => self.quit = true,
+            Confirm::Delete(id) => self.delete_run(id),
+            Confirm::Clear => self.clear_history(),
+            Confirm::Overwrite { run, path } => self.write_transcript(run, &path),
         }
     }
 
@@ -348,9 +424,10 @@ impl App {
             self.guide_key(key);
             return;
         }
-        if self.confirm_quit {
-            self.confirm_quit = false;
-            self.quit = key.code == ratatui::crossterm::event::KeyCode::Char('y');
+        if let Some(c) = self.confirm.take() {
+            if key.code == ratatui::crossterm::event::KeyCode::Char('y') {
+                self.confirmed(c);
+            }
             return;
         }
         if self.help.is_some() {
@@ -387,6 +464,8 @@ impl App {
     fn move_by(&mut self, d: isize) {
         if self.full {
             self.scroll = self.scroll.saturating_add_signed(d as i16).min(self.scroll_max.get());
+        } else if self.focus == Focus::Runs {
+            self.runs.step(d);
         } else if let Some((sel, len)) = self.list() {
             *sel = sel.saturating_add_signed(d).min(len.saturating_sub(1));
         }
@@ -395,6 +474,8 @@ impl App {
     fn move_to(&mut self, i: usize) {
         if self.full {
             self.scroll = if i == 0 { 0 } else { self.scroll_max.get() };
+        } else if self.focus == Focus::Runs {
+            self.runs.select_end(i != 0);
         } else if let Some((sel, len)) = self.list() {
             *sel = i.min(len.saturating_sub(1));
         }
@@ -429,10 +510,17 @@ pub fn run(report: &Path, rpt_bin: &Path) -> i32 {
     let config_path =
         crate::config::path(std::env::var_os("XDG_CONFIG_HOME").as_deref(), std::env::var_os("HOME").as_deref());
     let client = Client::new(rpt_bin, report);
-    let mut app = match config_path {
-        Some(path) => App::from_config_file(client, &path),
-        None => App::new(client),
-    };
+    let mut config = config_path.as_deref().map(crate::config::load_file).unwrap_or_default();
+    config.history.dir = crate::config::history_dir(
+        config.history.dir.as_deref(),
+        std::env::var_os("XDG_STATE_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    );
+    if config.history.dir.is_none() {
+        config.errors.push("run history is off: neither HOME nor XDG_STATE_HOME is set".into());
+    }
+    let mut app = App::with_config(client, config);
+    app.config_path = config_path;
     let mut terminal = ratatui::init();
     let result = main_loop(&mut terminal, &mut app);
     app.kill_all();
