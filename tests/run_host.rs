@@ -187,10 +187,12 @@ fn nvim_starts_without_e1568_redraws_on_resize_and_quits() {
 fn a_flood_of_output_never_starves_the_reader_of_the_screen() {
     let dir = tempfile::tempdir().unwrap();
     // Three seconds of coloured, wide lines: long enough for an unfair lock to starve readers.
+    // timeout can cut yes off inside an escape sequence, which would then swallow seq's digits
+    // as its parameters; CAN (\030) cancels any unfinished sequence first.
     let mut run = start(
         sh(
             dir.path(),
-            r"timeout 3 yes '[1;31mred[0m [38;2;10;200;90mtrue colour[0m ワイド文字 0123456789 0123456789 0123456789'; seq 1 200000",
+            r"timeout 3 yes '[1;31mred[0m [38;2;10;200;90mtrue colour[0m ワイド文字 0123456789 0123456789 0123456789'; printf '\030'; seq 1 200000",
         ),
         40,
         120,
